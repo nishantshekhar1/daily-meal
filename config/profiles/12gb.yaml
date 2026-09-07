@@ -1,0 +1,84 @@
+# ── Profile: 12 GB single GPU (RTX 3060 12GB / 4070) ────────────────────────
+# Select with:  CONFIG_PATH=../config/profiles/12gb.yaml
+#
+# VRAM budget (Q4_K_M):
+#   reasoning  qwen3:8b          ~ 5.2 GB
+#   vision/ocr qwen3-vl:4b       ~ 3.5 GB
+#   embedding  nomic-embed-text  ~ 0.3 GB
+#   total                        ~ 9.0 GB  → all three resident, headroom spare
+#
+# Quality note: this is the tier where degradation becomes noticeable. Expect
+# more generic recipes, and occasionally a spurious "not enough stock" message
+# when the model names an ingredient that is not actually in your pantry —
+# InventoryAllocator correctly rejects it, but the dish is lost rather than
+# retried. Confirming receipt lines carefully keeps the pantry accurate, which
+# is what the shortlist quality depends on most.
+
+ollama_host: "127.0.0.1"
+
+roles:
+  # ── Reasoning ─────────────────────────────────────────────────────────────
+  reasoning:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3:8b"
+    api_key: "ollama"
+    max_tokens: 3072
+    temperature: 0.4
+
+  # ── Vision (ingredient photos) ────────────────────────────────────────────
+  vision:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:4b"
+    api_key: "ollama"
+    max_tokens: 1024
+    temperature: 0.1
+
+  # ── OCR (receipts) ────────────────────────────────────────────────────────
+  ocr:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:4b"
+    api_key: "ollama"
+    max_tokens: 2048
+    temperature: 0.0
+
+  # ── Embeddings ────────────────────────────────────────────────────────────
+  embedding:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "nomic-embed-text"
+    api_key: "ollama"
+    dimensions: 768
+
+# ── Household preferences ───────────────────────────────────────────────────
+preferences:
+  cuisine_priority:
+    - indian
+    - mexican
+    - italian
+
+  # Dropped from 3 to 2. A request costs `1 + max_suggestions` generations, so
+  # this removes a full recipe write from every plan.
+  max_suggestions: 2
+
+# ── Feature flags ───────────────────────────────────────────────────────────
+# Must live at the top level, not under `preferences` — Settings.features reads
+# them from here, and keys placed elsewhere silently fall back to defaults.
+features:
+  # ── Web search ─────────────────────────────────────────────────────────────
+  web_search: false
+  web_search_provider: "tavily"
+  tavily_search_depth: "basic"
+  searxng_url: "http://localhost:8080"
+  web_search_timeout_s: 8
+  web_search_max_results: 5
+
+  # Off at this tier: the background worker competes for a card that has little
+  # spare capacity, and the win does not justify the contention.
+  prewarm_suggestions: false
+  prewarm_interval_s: 300
+
+# ── Application ─────────────────────────────────────────────────────────────
+app:
+  db_url: "sqlite:///./data/daily_meal.db"
+  upload_dir: "./uploads"
+  low_stock_threshold_pct: 15
+  planning_session_ttl_s: 3600
