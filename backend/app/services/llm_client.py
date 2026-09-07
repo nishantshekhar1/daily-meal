@@ -1,6 +1,6 @@
 """LLM client abstraction.
 
-All communication with local vLLM endpoints goes through this module.
+All communication with local LLM endpoints (Ollama OpenAI-compatible API) goes through this module.
 The backing model is a config value — swap roles in config/models.yaml,
 no code changes needed.
 """
@@ -28,7 +28,7 @@ def _make_client(cfg: dict[str, Any]) -> AsyncOpenAI:
 
 
 class LLMClient:
-    """Thin async wrapper around the OpenAI-compatible vLLM server.
+    """Thin async wrapper around the OpenAI-compatible Ollama server.
 
     Three entry points:
     - chat()           → free-form chat, returns the assistant text
@@ -68,26 +68,47 @@ class LLMClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def chat_json(self, messages: list[dict], schema: dict, **kwargs) -> dict:
-        """Request structured JSON output matching `schema` (JSON Schema object)."""
+        """Request structured JSON output matching `schema` (JSON Schema object).
+
+        Tries OpenAI json_schema first; falls back to json_object + prompt for Ollama.
+        """
         cfg = self._reasoning_cfg
-        resp = await self._reasoning.chat.completions.create(
-            model=cfg["model"],
-            messages=messages,
-            max_tokens=cfg.get("max_tokens", 2048),
-            temperature=kwargs.get("temperature", 0.2),
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": "response", "schema": schema, "strict": True},
-            },
-        )
-        content = resp.choices[0].message.content or "{}"
+        content = "{}"
+        try:
+            resp = await self._reasoning.chat.completions.create(
+                model=cfg["model"],
+                messages=messages,
+                max_tokens=cfg.get("max_tokens", 2048),
+                temperature=kwargs.get("temperature", 0.2),
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": "response", "schema": schema, "strict": True},
+                },
+            )
+            content = resp.choices[0].message.content or "{}"
+        except Exception as e:
+            logger.info("json_schema unsupported (%s); falling back to json_object", e)
+            hint = {
+                "role": "system",
+                "content": (
+                    "Respond with a single JSON object only (no markdown). "
+                    f"It must match this JSON Schema: {json.dumps(schema)}"
+                ),
+            }
+            resp = await self._reasoning.chat.completions.create(
+                model=cfg["model"],
+                messages=[hint, *messages],
+                max_tokens=cfg.get("max_tokens", 2048),
+                temperature=kwargs.get("temperature", 0.2),
+                response_format={"type": "json_object"},
+            )
+            content = resp.choices[0].message.content or "{}"
         try:
             return json.loads(content)
         except json.JSONDecodeError:
             logger.warning("JSON parse failed, raw content: %s", content[:500])
             return {}
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def chat_tools(
         self,
         messages: list[dict],
@@ -160,7 +181,7 @@ class LLMClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
     async def ocr(self, image_b64: str, mime: str = "image/jpeg") -> str:
-        """Run receipt OCR via PaddleOCR-VL.  Returns raw text dump."""
+        """Run receipt OCR via the configured vision/OCR model. Returns raw text."""
         cfg = self._ocr_cfg
         prompt = (
             "Extract all text from this grocery receipt exactly as printed. "

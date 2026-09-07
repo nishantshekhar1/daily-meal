@@ -1,7 +1,7 @@
 """Receipt parsing service.
 
 Pipeline:
-  1. OCR via PaddleOCR-VL (produces raw text per line)
+  1. OCR via the configured VL/OCR model (produces raw text per line)
   2. Line classification: grocery vs. non-grocery via LLM
   3. Quantity + unit extraction from each grocery line
   4. Canonicalization (delegates to canonicalize.py)

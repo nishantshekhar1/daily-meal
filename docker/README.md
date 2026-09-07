@@ -1,43 +1,27 @@
 # Docker Setup
 
-## GPU box (Linux, 2x RTX 4090)
+## Model serving (Ollama)
 
-### Prerequisites
-
-```bash
-# NVIDIA Container Toolkit
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
-sudo systemctl restart docker
-```
-
-### Download models
+Models are served by **Ollama**, not the old vLLM compose stack.
 
 ```bash
-# Set your HuggingFace token if needed
-export HUGGING_FACE_HUB_TOKEN=hf_...
-
-pip install huggingface_hub
+# Install: https://ollama.com/download
+# Ensure the service is running, then pull required models:
 python scripts/download_models.py
+
+# Sanity check
+curl http://127.0.0.1:11434/v1/models
 ```
 
-### Start model servers
+Configure endpoints in `config/models.yaml` (`ollama_host`, roles → model names).
 
-```bash
-docker compose -f docker/docker-compose.models.yml up -d
+Default mapping:
 
-# Verify all three endpoints are healthy:
-curl http://localhost:8010/health   # reasoning + vision
-curl http://localhost:8011/health   # OCR
-curl http://localhost:8012/health   # embedding
-```
-
-### Update config
-
-Edit `config/models.yaml` and set `gpu_box_host` to the GPU machine's LAN IP.
+| Role | Ollama model | Purpose |
+|---|---|---|
+| reasoning | `qwen3.6:35b` | Meal planning + tools |
+| vision / ocr | `qwen3-vl:8b` | Ingredient photos + receipt OCR |
+| embedding | `nomic-embed-text` | Ingredient canonicalization |
 
 ## App machine
 

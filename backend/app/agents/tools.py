@@ -22,7 +22,7 @@ from app.models import CanonicalIngredient, PlanningSession, StockLot
 logger = logging.getLogger(__name__)
 
 
-# ── Tool schemas (sent to vLLM as `tools` parameter) ─────────────────────────
+# ── Tool schemas (sent to the LLM as `tools` parameter) ─────────────────────────
 
 ASK_INGREDIENT_TOOL = {
     "type": "function",

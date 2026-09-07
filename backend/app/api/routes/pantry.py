@@ -49,7 +49,7 @@ def low_stock(db: DB):
 
 
 @router.post("/photo")
-async def add_from_photo(file: UploadFile = File(...), db: DB = Depends(get_session)):
+async def add_from_photo(db: DB, file: UploadFile = File(...)):
     """Identify an ingredient from a photo and create a draft stock lot."""
     settings = get_settings()
     upload_dir = Path(settings.upload_dir)

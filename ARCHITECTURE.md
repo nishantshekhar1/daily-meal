@@ -1,13 +1,13 @@
 # Daily Meal Planner — Architecture
 
 > **Live document.** Updated alongside every significant code change.
-> Last updated: 2026-09-07
+> Last updated: 2026-09-07 (switched model serving to Ollama)
 
 ---
 
 ## Overview
 
-A locally-hosted, LAN-accessible weekly meal-planning web app. An AI agent backed by vLLM on a 2×RTX 4090 Linux box ingests pantry stock from receipts, photos, and manual entry, then suggests meals on demand. No cloud inference. No accounts. Single household.
+A locally-hosted, LAN-accessible weekly meal-planning web app. An AI agent backed by local Ollama ingests pantry stock from receipts, photos, and manual entry, then suggests meals on demand. No cloud inference. No accounts. Single household.
 
 ---
 
@@ -29,30 +29,28 @@ Phone / tablet on LAN
            │  LAN  (OpenAI-protocol REST)
            ▼
 ┌──────────────────────────────────────┐
-│  GPU box (Linux, 2×RTX 4090, 48 GB)  │
-│  ────────────────────────────────     │
-│  vLLM  :8010  Qwen3-VL 32B AWQ       │
-│                (reasoning + vision)   │
-│  vLLM  :8011  PaddleOCR-VL 1.6       │
-│                (receipt OCR)          │
-│  vLLM  :8012  Qwen3-Embed 0.6B       │
-│                (embeddings)           │
+│  Ollama (:11434 OpenAI-compatible)   │
+│  ────────────────────────────────    │
+│  qwen3.6:35b     reasoning / tools   │
+│  qwen3-vl:8b     vision + OCR        │
+│  nomic-embed-text  embeddings        │
 │  SearXNG :8080 (optional, off by default)
 └──────────────────────────────────────┘
 ```
 
 ---
 
-## VRAM allocation (48 GB total)
+## Model allocation (Ollama)
 
-| Model | Port | VRAM | Role |
-|---|---|---|---|
-| Qwen3-VL 32B AWQ, TP=2 | 8010 | ~20 GB | Agent tool-calling, ingredient photos |
-| PaddleOCR-VL 1.6, 0.9B | 8011 | ~2 GB | Receipt OCR |
-| Qwen3-Embedding 0.6B | 8012 | ~1 GB | Ingredient canonicalization |
-| KV cache headroom | — | ~25 GB | Long plan generations |
+| Model | Role |
+|---|---|
+| `qwen3.6:35b` | Agent tool-calling / meal planning |
+| `qwen3-vl:8b` | Ingredient photos + receipt OCR |
+| `nomic-embed-text` | Ingredient canonicalization embeddings |
 
-All roles are swappable via `config/models.yaml` — the app speaks plain OpenAI protocol.
+All roles are swappable via `config/models.yaml` — the app speaks plain OpenAI protocol against Ollama (`:11434/v1`).
+
+**Trade-off:** Dropped specialized PaddleOCR-VL in favor of one VL model under Ollama — simpler ops, slightly weaker dense thermal receipt OCR.
 
 ---
 
@@ -155,22 +153,31 @@ No receipt line ever auto-commits to the pantry. All lines go through a review s
 
 ---
 
+## Local run
+
+```bash
+./scripts/dev.sh   # uvicorn :8000 + vite :5173 (Ctrl+C stops both)
+```
+
+Uses repo-root `.venv` and `frontend/node_modules`. LLM calls go to local Ollama (`:11434/v1`).
+
 ## Configuration reference
 
 All model configuration lives in `config/models.yaml`. Key fields:
 
 ```yaml
-gpu_box_host: "192.168.1.100"    # LAN IP of the GPU box
+ollama_host: "127.0.0.1"
 
 roles:
-  reasoning:                      # agent + photo analysis
-    base_url: "http://{gpu_box_host}:8010/v1"
-    model: "Qwen/Qwen3-VL-32B-Instruct-AWQ"
-    tool_call_parser: "qwen3_coder"
-  ocr:                            # receipt OCR
-    base_url: "http://{gpu_box_host}:8011/v1"
-  embedding:                      # ingredient nearest-match
-    base_url: "http://{gpu_box_host}:8012/v1"
+  reasoning:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3.6:35b"
+  vision / ocr:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:8b"
+  embedding:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "nomic-embed-text"
 
 features:
   web_search: false               # enable after SearXNG is running

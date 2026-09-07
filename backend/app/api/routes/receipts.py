@@ -21,7 +21,7 @@ DB = Annotated[Session, Depends(get_session)]
 
 
 @router.post("/upload")
-async def upload_receipt(file: UploadFile = File(...), db: DB = Depends(get_session)):
+async def upload_receipt(db: DB, file: UploadFile = File(...)):
     """Upload a receipt image.  Triggers OCR + parsing; returns the review payload."""
     settings = get_settings()
     upload_dir = Path(settings.upload_dir)

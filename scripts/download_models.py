@@ -1,67 +1,92 @@
 #!/usr/bin/env python3
-"""Download all required model weights to the local cache.
+"""Pull the Ollama models required by Daily Meal Planner.
 
-Run this on the GPU box before starting the vLLM model servers.
+Requires `ollama` on PATH and a running Ollama service (`ollama serve`).
 
 Usage:
-    python scripts/download_models.py [--models-dir ./docker/models]
+    python scripts/download_models.py
 """
 from __future__ import annotations
 
-import argparse
-import os
+import shutil
+import subprocess
 import sys
 
-try:
-    from huggingface_hub import snapshot_download
-except ImportError:
-    print("Install huggingface_hub first:  pip install huggingface_hub")
-    sys.exit(1)
-
-# Exact repo IDs to pin — verify and update these before first run.
-# AWQ quants exist under official Qwen org or community mirrors.
+# Keep in sync with config/models.yaml
 MODELS = [
     {
-        "repo_id": "Qwen/Qwen3-VL-32B-Instruct-AWQ",
-        "description": "Main reasoning + vision model (~20GB weights)",
+        "name": "qwen3.6:35b",
+        "description": "Reasoning / meal-planning agent (tool calling)",
         "required": True,
     },
     {
-        "repo_id": "PaddlePaddle/PaddleOCR-VL-1.6",
-        "description": "Receipt OCR specialist (~2GB)",
+        "name": "qwen3-vl:8b",
+        "description": "Vision + receipt OCR",
         "required": True,
     },
     {
-        "repo_id": "Qwen/Qwen3-Embedding-0.6B",
-        "description": "Embedding model for ingredient canonicalization (~1GB)",
+        "name": "nomic-embed-text",
+        "description": "Embeddings for ingredient canonicalization",
         "required": True,
     },
 ]
 
 
-def download(models_dir: str) -> None:
-    token = os.getenv("HUGGING_FACE_HUB_TOKEN")
+def _listed_names() -> set[str]:
+    result = subprocess.run(
+        ["ollama", "list"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    names: set[str] = set()
+    for line in result.stdout.splitlines()[1:]:
+        parts = line.split()
+        if parts:
+            names.add(parts[0])
+    return names
+
+
+def _have_model(have: set[str], name: str) -> bool:
+    if name in have:
+        return True
+    # nomic-embed-text matches nomic-embed-text:latest
+    if f"{name}:latest" in have:
+        return True
+    if ":" not in name:
+        return any(h == name or h.startswith(name + ":") for h in have)
+    return False
+
+
+def pull_all() -> None:
+    if shutil.which("ollama") is None:
+        print("ollama not found on PATH. Install from https://ollama.com/download")
+        sys.exit(1)
+
+    try:
+        have = _listed_names()
+    except subprocess.CalledProcessError as e:
+        print("Cannot talk to Ollama. Is the Ollama service running?")
+        print(e.stderr or e)
+        sys.exit(1)
+
     for m in MODELS:
-        print(f"\n── {m['repo_id']}  ({m['description']}) ──")
+        name = m["name"]
+        print(f"\n── {name}  ({m['description']}) ──")
+        if _have_model(have, name):
+            print("   ✓ already present")
+            continue
         try:
-            path = snapshot_download(
-                repo_id=m["repo_id"],
-                cache_dir=models_dir,
-                token=token,
-            )
-            print(f"   ✓ Downloaded to: {path}")
-        except Exception as e:
+            subprocess.run(["ollama", "pull", name], check=True)
+            print(f"   ✓ pulled {name}")
+            have = _listed_names()
+        except subprocess.CalledProcessError as e:
             if m["required"]:
                 print(f"   ✗ FAILED (required): {e}")
                 sys.exit(1)
-            else:
-                print(f"   ! Failed (optional): {e}")
+            print(f"   ! Failed (optional): {e}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Download model weights")
-    parser.add_argument("--models-dir", default="./docker/models", help="Local cache directory")
-    args = parser.parse_args()
-    os.makedirs(args.models_dir, exist_ok=True)
-    download(args.models_dir)
-    print("\nAll models downloaded successfully.")
+    pull_all()
+    print("\nAll Ollama models ready.")
