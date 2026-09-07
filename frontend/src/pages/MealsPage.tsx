@@ -6,8 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { apiFetch } from "@/lib/utils";
-import type { SuggestResult, PlannedMeal, CookResult } from "@/types";
+import { apiFetch, apiStream } from "@/lib/utils";
+import type { SuggestResult, SuggestEvent, PlannedMeal, CookResult } from "@/types";
 
 const SLOT_LABELS: Record<string, string> = {
   breakfast: "Breakfast",
@@ -26,21 +26,39 @@ function slotFromHour(): string {
 export default function MealsPage() {
   const qc = useQueryClient();
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<string>(slotFromHour);
   const [result, setResult] = useState<SuggestResult | null>(null);
   const [cookResult, setCookResult] = useState<CookResult | null>(null);
   const [cookingMeal, setCookingMeal] = useState<PlannedMeal | null>(null);
   const [expandedDish, setExpandedDish] = useState<number | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [streamedMeals, setStreamedMeals] = useState<PlannedMeal[]>([]);
 
+  // Planning makes one LLM call per dish, so the full run takes minutes. The
+  // stream lets each recipe render as it lands instead of after the last one.
   const suggest = useMutation({
-    mutationFn: (slot?: string) =>
-      apiFetch<SuggestResult>("/meals/suggest", {
-        method: "POST",
-        body: JSON.stringify({ slot: slot ?? slotFromHour(), session_id: sessionId }),
-      }),
+    mutationFn: async (slot?: string) => {
+      setProgress("Starting…");
+      setStreamedMeals([]);
+
+      let final: SuggestResult | null = null;
+      for await (const event of apiStream<SuggestEvent>("/meals/suggest/stream", {
+        slot: slot ?? selectedSlot,
+        session_id: sessionId,
+      })) {
+        if (event.type === "status") setProgress(event.message);
+        else if (event.type === "meal") setStreamedMeals((prev) => [...prev, event.meal]);
+        else if (event.type === "done") final = event.result;
+        else if (event.type === "error") throw new Error(event.message);
+      }
+      if (!final) throw new Error("Planning ended without a result");
+      return final;
+    },
     onSuccess: (data) => {
       setResult(data);
       if (data.session_id) setSessionId(data.session_id);
     },
+    onSettled: () => setProgress(null),
   });
 
   const answerQuestion = useMutation({
@@ -91,14 +109,33 @@ export default function MealsPage() {
     },
   });
 
-  const currentSlot = slotFromHour();
-  const meals = result?.planned_meals ?? [];
+  const timeSlot = slotFromHour();
+
+  const runSuggest = () => {
+    setResult(null);
+    setSessionId(null);
+    suggest.mutate(selectedSlot);
+  };
+
+  // Picking a slot only changes the selection — results for another meal no
+  // longer apply, so clear them and let the user press Suggest again.
+  const pickSlot = (slot: string) => {
+    if (slot === selectedSlot) return;
+    setSelectedSlot(slot);
+    setResult(null);
+    setSessionId(null);
+    setStreamedMeals([]);
+  };
+
+  // While the stream is open the finished recipes are all we have; the final
+  // `done` event replaces them with the authoritative list.
+  const meals = result?.planned_meals ?? streamedMeals;
   const questions = result?.pending_questions?.filter((q) => q.answer === null) ?? [];
   const safetyReports = result?.safety_reports?.filter((r) => !r.safe) ?? [];
 
   return (
     <div className="pb-24">
-      <TopBar title="Meal Suggestions" subtitle={`${SLOT_LABELS[currentSlot]} time`} />
+      <TopBar title="Meal Suggestions" subtitle={`${SLOT_LABELS[timeSlot]} time`} />
 
       <div className="px-4 py-4 max-w-lg mx-auto space-y-4">
         {/* Suggest button */}
@@ -106,32 +143,23 @@ export default function MealsPage() {
           {(["breakfast", "lunch", "dinner"] as const).map((slot) => (
             <Button
               key={slot}
-              variant={slot === currentSlot ? "default" : "outline"}
-              size="sm"
-              className="flex-1 capitalize"
-              onClick={() => {
-                setResult(null);
-                setSessionId(null);
-                suggest.mutate(slot);
-              }}
+              variant={slot === selectedSlot ? "default" : "outline"}
+              className="flex-1 h-11 px-2 capitalize"
+              onClick={() => pickSlot(slot)}
               disabled={suggest.isPending}
             >
-              {slot === currentSlot && suggest.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                SLOT_LABELS[slot]
-              )}
+              {SLOT_LABELS[slot]}
             </Button>
           ))}
         </div>
 
-        {/* Loading state */}
+        {/* Live progress */}
         {suggest.isPending && (
           <Card>
-            <CardContent className="py-8 flex flex-col items-center gap-3">
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <CardContent className="py-6 flex items-center gap-3">
+              <Loader2 className="h-5 w-5 shrink-0 animate-spin text-primary" />
               <p className="text-sm text-muted-foreground">
-                AI is planning your meals…
+                {progress ?? "AI is planning your meals…"}
               </p>
             </CardContent>
           </Card>
@@ -195,21 +223,34 @@ export default function MealsPage() {
         {/* No result yet */}
         {!suggest.isPending && !result && (
           <Card>
-            <CardContent className="py-12 text-center">
+            <CardContent className="py-10 text-center">
               <ChefHat className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
               <p className="font-medium">Ready to suggest a meal</p>
               <p className="text-sm text-muted-foreground mt-1">
-                Tap a meal time above and the AI will check your pantry
+                The AI will check your pantry and plan {SLOT_LABELS[selectedSlot].toLowerCase()}
               </p>
+              <Button
+                size="lg"
+                className="w-full mt-5"
+                onClick={runSuggest}
+                disabled={suggest.isPending}
+              >
+                <ChefHat className="h-5 w-5" />
+                Suggest {SLOT_LABELS[selectedSlot]}
+              </Button>
             </CardContent>
           </Card>
         )}
 
         {/* Error */}
-        {result?.error && (
+        {(result?.error || suggest.isError) && (
           <Card className="border-destructive">
             <CardContent className="py-4">
-              <p className="text-sm text-destructive">{result.message || "No dishes could be suggested from current stock."}</p>
+              <p className="text-sm text-destructive">
+                {result?.error
+                  ? result.message || "No dishes could be suggested from current stock."
+                  : suggest.error?.message || "Planning failed."}
+              </p>
             </CardContent>
           </Card>
         )}
@@ -290,7 +331,7 @@ export default function MealsPage() {
                   className="flex-1"
                   onClick={() => {
                     setCookingMeal(meal);
-                    cookMeal.mutate(meal.dish_id);
+                    cookMeal.mutate(meal.planned_meal_id);
                   }}
                   disabled={cookMeal.isPending}
                 >

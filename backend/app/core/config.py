@@ -75,6 +75,19 @@ class Settings(BaseSettings):
         return str(self.features.get("searxng_url", "http://localhost:8080"))
 
     @property
+    def preferences(self) -> dict[str, Any]:
+        return self._models_cfg.get("preferences", {})
+
+    @property
+    def cuisine_priority(self) -> list[str]:
+        """Cuisines in descending preference order, normalized to lowercase.
+
+        Dishes tagged with a cuisine not in this list rank after all listed ones.
+        """
+        raw = self.preferences.get("cuisine_priority") or []
+        return [str(c).strip().lower() for c in raw if str(c).strip()]
+
+    @property
     def app_cfg(self) -> dict[str, Any]:
         return self._models_cfg.get("app", {})
 

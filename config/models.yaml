@@ -37,6 +37,16 @@ roles:
     api_key: "ollama"
     dimensions: 768
 
+# ── Household preferences ───────────────────────────────────────────────────
+preferences:
+  # Cuisines in descending preference order. The planner asks the model to
+  # tag each shortlisted dish with a cuisine, then re-ranks deterministically
+  # by this order. Anything not listed ranks last.
+  cuisine_priority:
+    - indian
+    - mexican
+    - italian
+
 # ── Feature flags ───────────────────────────────────────────────────────────
 features:
   web_search: false

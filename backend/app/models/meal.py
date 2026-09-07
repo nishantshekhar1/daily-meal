@@ -39,6 +39,11 @@ class Dish(SQLModel, table=True):
         description="Comma-separated MealSlot values this dish works for.",
     )
     audience: MealAudience = Field(default=MealAudience.main)
+    cuisine: Optional[str] = Field(
+        default=None,
+        index=True,
+        description="Lowercase cuisine tag (e.g. indian) used for preference ranking.",
+    )
     last_suggested_at: Optional[datetime] = Field(default=None)
 
     planned_meals: list["PlannedMeal"] = Relationship(back_populates="dish")

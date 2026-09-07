@@ -11,6 +11,7 @@ from app.agents.planner_nodes import (
     allocate_inventory,
     ask_clarifications,
     load_context,
+    rank_dishes,
     route_after_allocate,
     route_after_shortlist,
     shortlist_dishes,
@@ -28,6 +29,7 @@ def build_planner_graph() -> Any:
 
     g.add_node("load_context", load_context)
     g.add_node("shortlist", shortlist_dishes)
+    g.add_node("rank_by_cuisine", rank_dishes)
     g.add_node("allocate", allocate_inventory)
     g.add_node("ask_clarifications", ask_clarifications)
     g.add_node("write_recipes", write_recipes)
@@ -38,10 +40,11 @@ def build_planner_graph() -> Any:
         "shortlist",
         route_after_shortlist,
         {
-            "allocate": "allocate",
+            "rank": "rank_by_cuisine",
             "empty": END,
         },
     )
+    g.add_edge("rank_by_cuisine", "allocate")
     g.add_conditional_edges(
         "allocate",
         route_after_allocate,

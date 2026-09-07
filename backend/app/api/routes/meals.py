@@ -1,13 +1,16 @@
 """Meal planning and cooking endpoints."""
 from __future__ import annotations
 
+import json
+import logging
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
 from app.agents.planner import MealPlannerAgent, MealSlot
-from app.db.session import get_session
+from app.db.session import engine, get_session
 from app.models import HouseholdMember, MealPlan, PlannedMeal, PlanningSession, StockLot, CanonicalIngredient
 from app.schemas.meal import (
     AnswerQuestionRequest,
@@ -18,8 +21,14 @@ from app.schemas.meal import (
 from app.services import cook as cook_svc
 from app.services.llm_client import get_llm_client
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/meals", tags=["meals"])
 DB = Annotated[Session, Depends(get_session)]
+
+
+def _active_members(db: Session) -> list[HouseholdMember]:
+    return list(db.exec(select(HouseholdMember).where(HouseholdMember.active == True)).all())
 
 
 @router.post("/suggest")
@@ -29,18 +38,55 @@ async def suggest(req: SuggestRequest, db: DB):
     slot is inferred from current time if not provided.
     session_id can be provided to resume a session (after answering questions).
     """
-    llm = get_llm_client()
-    agent = MealPlannerAgent(db, llm)
-
-    slot = MealSlot(req.slot) if req.slot else None
-    members = list(db.exec(select(HouseholdMember).where(HouseholdMember.active == True)).all())
-
-    result = await agent.suggest(
-        slot=slot,
-        members=members,
+    agent = MealPlannerAgent(db, get_llm_client())
+    return await agent.suggest(
+        slot=MealSlot(req.slot) if req.slot else None,
+        members=_active_members(db),
         planning_session_id=req.session_id,
     )
-    return result
+
+
+@router.post("/suggest/stream")
+async def suggest_stream(req: SuggestRequest):
+    """Server-Sent Events variant of :func:`suggest`.
+
+    Planning runs one LLM call per dish, so a full plan takes minutes.  This
+    emits ``status`` events as the graph advances and a ``meal`` event per
+    finished recipe, then a terminal ``done`` event with the same payload the
+    blocking endpoint returns.
+    """
+    slot = MealSlot(req.slot) if req.slot else None
+    session_id = req.session_id
+
+    def sse(payload: dict) -> str:
+        return f"data: {json.dumps(payload, default=str)}\n\n"
+
+    async def event_source():
+        # Own session rather than the DB dependency: FastAPI tears down
+        # yield-dependencies before a streaming body finishes, so the
+        # request-scoped session would already be closed in here.
+        with Session(engine) as db:
+            agent = MealPlannerAgent(db, get_llm_client())
+            try:
+                async for event in agent.astream_suggest(
+                    slot=slot,
+                    members=_active_members(db),
+                    planning_session_id=session_id,
+                ):
+                    yield sse(event)
+            except Exception as e:  # surface as a stream event; headers are long sent
+                logger.exception("suggest stream failed")
+                yield sse({"type": "error", "message": str(e)})
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # don't let a proxy buffer the stream
+        },
+    )
 
 
 @router.post("/answer-question")

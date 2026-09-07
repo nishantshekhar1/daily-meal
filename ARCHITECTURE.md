@@ -1,7 +1,7 @@
 # Daily Meal Planner — Architecture
 
 > **Live document.** Updated alongside every significant code change.
-> Last updated: 2026-09-07 (meal planner on LangGraph + Mermaid export)
+> Last updated: 2026-09-07 (streaming suggest endpoint; LangGraph planner + Mermaid export)
 
 ---
 
@@ -75,7 +75,7 @@ All roles are swappable via `config/models.yaml` — the app speaks plain OpenAI
 | `services/cook.py` | `cook_meal()`, `confirm_exhaustion()` | FIFO deduction, exhaustion candidates, user confirmation |
 | `agents/planner_graph.py` | `get_planner_graph()`, `planner_mermaid[_png]()` | Compiled LangGraph + Mermaid/PNG export |
 | `agents/planner_nodes.py` | `load_context`, `shortlist_dishes`, `allocate_inventory`, … | Graph node implementations |
-| `agents/planner.py` | `MealPlannerAgent.suggest()` | Facade: `ainvoke` planner graph with db/llm config |
+| `agents/planner.py` | `MealPlannerAgent.suggest()`, `.astream_suggest()` | Facade: `ainvoke` / `astream` the planner graph with db/llm config |
 | `agents/inventory.py` | `InventoryAllocator.allocate()` | Deterministic Python stock reservation (no LLM arithmetic) |
 | `agents/safety.py` | `validate_toddler_dish()` | Hard-coded CDC/NHS toddler safety rules; never delegated to LLM |
 | `agents/tools.py` | `ToolExecutor`, `get_active_tools()` | Tool definitions + code-enforced `ClarificationBudget(max=3)` |
@@ -159,13 +159,58 @@ No receipt line ever auto-commits to the pantry. All lines go through a review s
 ## Meal planner graph (LangGraph)
 
 ```
-START → load_context → shortlist ─┬─→ allocate ─┬─→ write_recipes → END
-                                  │             └─→ ask_clarifications → END
+START → load_context → shortlist ─┬─→ rank_by_cuisine → allocate ─┬─→ write_recipes → END
+                                  │                               └─→ ask_clarifications → END
                                   └─→ END
 ```
 
+**Cuisine priority.** `preferences.cuisine_priority` in `config/models.yaml` lists cuisines
+most-preferred first (default: indian, mexican, italian). The model tags each shortlisted
+dish with a `cuisine`; `rank_by_cuisine` then re-orders deterministically in Python, so
+ranking never depends on the model obeying an instruction. Main and toddler dishes are
+ranked independently so a toddler dish is not pushed out by better-ranked adult dishes.
+Unlisted cuisines rank last, and ties keep the model's original order.
+The chosen tag is persisted on `Dish.cuisine` (migration `0002_add_dish_cuisine`)
+and returned in the `/meals/suggest` response.
+
 - **Trade-off:** Graph topology is explicit and exportable (Mermaid); node I/O stays in Python with the existing `LLMClient` (Ollama) rather than LangChain chat models — fewer moving parts, same local inference path.
 - **Export:** `GET /api/v1/meals/graph/mermaid`, `GET /api/v1/meals/graph/mermaid.png`, or `python scripts/export_planner_graph.py` → `docs/planner_graph.{mmd,png}`.
+
+### Streaming progress (SSE)
+
+`write_recipes` issues **one LLM call per feasible dish, sequentially**, so a plan
+costs `1 + N` generations. On the local 35B model that is roughly a minute per
+dish — several minutes before a blocking request returns anything.
+
+`POST /api/v1/meals/suggest/stream` runs the same graph via `astream` and reports
+progress as it goes. Nodes call `_emit()` in `planner_nodes.py`, which wraps
+LangGraph's `get_stream_writer()`; outside a streaming run it is a no-op, so the
+identical node code still serves the blocking `POST /meals/suggest`.
+
+Event types, one JSON object per SSE frame:
+
+| `type` | Payload | Emitted by |
+|---|---|---|
+| `status` | `step`, human-readable `message` | every node |
+| `meal` | one finished `PlannedMeal` | `write_recipes`, per dish |
+| `safety` | report for a dropped toddler dish | `write_recipes` |
+| `done` | the full `SuggestResult` | facade, after the graph ends |
+| `error` | `message` | route, on an unhandled exception |
+
+- **Trade-off — perceived vs. actual latency.** Nothing got faster; the first
+  recipe simply renders at ~1 min instead of ~4. Real speedups would mean running
+  the per-dish calls concurrently (needs `OLLAMA_NUM_PARALLEL` and a smaller
+  `MAX_SHORTLIST_DISHES`), which is not done yet.
+- **Trade-off — per-dish commit.** `write_recipes` commits after each dish rather
+  than once at the end, because a streamed card is clickable immediately and its
+  row must be durable if the client disconnects. A cancelled run therefore leaves
+  a partial `MealPlan` instead of rolling back.
+- **Trade-off — own DB session.** The route opens `Session(engine)` inside the
+  generator instead of using the `get_session` dependency: FastAPI tears down
+  yield-dependencies before a streaming body finishes, so the request-scoped
+  session would already be closed.
+- **Client:** `apiStream()` in `frontend/src/lib/utils.ts` parses SSE by hand
+  (`EventSource` is GET-only and planning needs a POST body).
 
 ## Local run
 

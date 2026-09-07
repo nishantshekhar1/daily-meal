@@ -23,6 +23,7 @@ class PlannerState(TypedDict, total=False):
     total_toddlers: int
     has_toddler: bool
     min_toddler_age: Optional[int]
+    cuisine_priority: list[str]
 
     # Intermediate
     candidate_dishes: list[dict[str, Any]]

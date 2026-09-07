@@ -2,17 +2,19 @@
 
 Graph topology (see ``planner_graph.py``):
 
-  START → load_context → shortlist ─┬─→ allocate ─┬─→ write_recipes → END
-                                    │             └─→ ask_clarifications → END
+  START → load_context → shortlist ─┬─→ rank_by_cuisine → allocate ─┬─→ write_recipes → END
+                                    │                               └─→ ask_clarifications → END
                                     └─→ END (empty shortlist)
 
-LLM proposes dishes/recipes; Python owns inventory math and toddler safety.
+LLM proposes dishes/recipes; Python owns cuisine ranking, inventory math and
+toddler safety.
 """
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from sqlmodel import Session, select
 
@@ -35,13 +37,14 @@ class MealPlannerAgent:
         self._llm = llm
         self._graph = get_planner_graph()
 
-    async def suggest(
+    # ── Internals shared by the blocking and streaming entry points ─────────
+
+    def _initial_state(
         self,
-        slot: Optional[MealSlot] = None,
-        members: Optional[list[HouseholdMember]] = None,
-        planning_session_id: Optional[str] = None,
-    ) -> dict:
-        """Run the planner graph and return the API-shaped result dict."""
+        slot: Optional[MealSlot],
+        members: Optional[list[HouseholdMember]],
+        planning_session_id: Optional[str],
+    ) -> dict[str, Any]:
         if members is None:
             members = list(
                 self._db.exec(
@@ -50,22 +53,23 @@ class MealPlannerAgent:
             )
 
         resolved_slot = slot or infer_slot(datetime.utcnow().hour)
-        member_ids = [m.id for m in members if m.id is not None]
-
-        initial = {
+        initial: dict[str, Any] = {
             "slot": resolved_slot.value,
             "session_id": planning_session_id or "",
-            "member_ids": member_ids,
+            "member_ids": [m.id for m in members if m.id is not None],
         }
         # Empty session_id → graph generates a new UUID in load_context
         if not initial["session_id"]:
             initial.pop("session_id")
+        return initial
 
-        final = await self._graph.ainvoke(
-            initial,
-            config={"configurable": {"db": self._db, "llm": self._llm}},
-        )
+    @property
+    def _run_config(self) -> dict[str, Any]:
+        return {"configurable": {"db": self._db, "llm": self._llm}}
 
+    @staticmethod
+    def _shape_result(final: dict[str, Any]) -> dict:
+        """Map terminal graph state onto the API response shape."""
         if final.get("error"):
             return {
                 "error": final["error"],
@@ -83,3 +87,44 @@ class MealPlannerAgent:
         if final.get("message"):
             result["message"] = final["message"]
         return result
+
+    # ── Entry points ────────────────────────────────────────────────────────
+
+    async def suggest(
+        self,
+        slot: Optional[MealSlot] = None,
+        members: Optional[list[HouseholdMember]] = None,
+        planning_session_id: Optional[str] = None,
+    ) -> dict:
+        """Run the planner graph to completion and return the result dict."""
+        final = await self._graph.ainvoke(
+            self._initial_state(slot, members, planning_session_id),
+            config=self._run_config,
+        )
+        return self._shape_result(final)
+
+    async def astream_suggest(
+        self,
+        slot: Optional[MealSlot] = None,
+        members: Optional[list[HouseholdMember]] = None,
+        planning_session_id: Optional[str] = None,
+    ) -> AsyncIterator[dict]:
+        """Run the planner graph, yielding progress events as they happen.
+
+        Yields the ``status``/``meal``/``safety`` events the nodes write via
+        ``_emit``, then a final ``done`` event carrying the same payload
+        :meth:`suggest` would have returned.  ``values`` mode is consumed purely
+        to capture terminal state; only ``custom`` events reach the client.
+        """
+        final: dict[str, Any] = {}
+        async for mode, chunk in self._graph.astream(
+            self._initial_state(slot, members, planning_session_id),
+            config=self._run_config,
+            stream_mode=["custom", "values"],
+        ):
+            if mode == "custom":
+                yield chunk
+            elif mode == "values":
+                final = chunk
+
+        yield {"type": "done", "result": self._shape_result(final)}

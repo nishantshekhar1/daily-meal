@@ -11,12 +11,14 @@ from datetime import date, datetime
 from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
+from langgraph.config import get_stream_writer
 from sqlmodel import Session, select
 
 from app.agents.graph_state import PlannerState
 from app.agents.inventory import DishRequirement, InventoryAllocator
 from app.agents.safety import validate_toddler_dish
 from app.agents.tools import ToolExecutor
+from app.core.config import get_settings
 from app.models import (
     CanonicalIngredient,
     Dish,
@@ -48,6 +50,10 @@ _SHORTLIST_SCHEMA = {
                         "enum": ["breakfast", "lunch", "dinner", "snack"],
                     },
                     "audience": {"type": "string", "enum": ["main", "toddler"]},
+                    "cuisine": {
+                        "type": "string",
+                        "description": "Cuisine of the dish, lowercase (e.g. indian, mexican, italian).",
+                    },
                     "description": {"type": "string"},
                     "ingredients": {
                         "type": "array",
@@ -63,7 +69,14 @@ _SHORTLIST_SCHEMA = {
                         },
                     },
                 },
-                "required": ["name", "slot", "audience", "description", "ingredients"],
+                "required": [
+                    "name",
+                    "slot",
+                    "audience",
+                    "cuisine",
+                    "description",
+                    "ingredients",
+                ],
                 "additionalProperties": False,
             },
         }
@@ -110,6 +123,24 @@ _RECIPE_SCHEMA = {
     "required": ["recipe"],
     "additionalProperties": False,
 }
+
+
+def _emit(event: dict[str, Any]) -> None:
+    """Push a progress event to a listening stream consumer.
+
+    No-op when the graph is run with plain ``ainvoke`` (no custom stream mode),
+    so the same node code serves both the blocking and streaming endpoints.
+    """
+    try:
+        writer = get_stream_writer()
+    except Exception:  # not inside a streaming graph run
+        return
+    if writer is not None:
+        writer(event)
+
+
+def _status(step: str, message: str) -> None:
+    _emit({"type": "status", "step": step, "message": message})
 
 
 def _cfg(config: RunnableConfig) -> tuple[Session, LLMClient]:
@@ -161,6 +192,7 @@ def pantry_context(db: Session) -> str:
 
 async def load_context(state: PlannerState, config: RunnableConfig) -> dict[str, Any]:
     db, _llm = _cfg(config)
+    _status("context", "Reading your pantry and household…")
     slot_name = state.get("slot") or infer_slot(datetime.utcnow().hour).value
     session_id = state.get("session_id") or str(uuid.uuid4())
 
@@ -196,6 +228,7 @@ async def load_context(state: PlannerState, config: RunnableConfig) -> dict[str,
         "total_toddlers": len(toddlers),
         "has_toddler": bool(toddlers),
         "min_toddler_age": min(toddler_ages) if toddler_ages else None,
+        "cuisine_priority": get_settings().cuisine_priority,
         "candidate_dishes": [],
         "feasible_dishes": [],
         "pending_questions": [],
@@ -211,6 +244,18 @@ async def shortlist_dishes(state: PlannerState, config: RunnableConfig) -> dict[
     _db, llm = _cfg(config)
     slot = state["slot"]
     has_toddler = state.get("has_toddler", False)
+    cuisine_priority = state.get("cuisine_priority") or []
+    if cuisine_priority:
+        cuisine_hint = (
+            "The household prefers these cuisines, most preferred first: "
+            + ", ".join(cuisine_priority)
+            + ". Favour the higher-preference cuisines when the pantry allows, "
+            "but do not force a cuisine if the ingredients do not suit it. "
+            "Tag every dish with its `cuisine` in lowercase. "
+        )
+    else:
+        cuisine_hint = "Tag every dish with its `cuisine` in lowercase. "
+
     prompt = [
         {
             "role": "system",
@@ -226,6 +271,7 @@ async def shortlist_dishes(state: PlannerState, config: RunnableConfig) -> dict[
                     if has_toddler
                     else ""
                 )
+                + cuisine_hint
                 + "Suggest 3–6 main dishes (audience=main) and, if there are toddlers, "
                 "1–3 toddler dishes (audience=toddler). "
                 "For each dish list the ingredients with realistic quantities for the "
@@ -240,17 +286,52 @@ async def shortlist_dishes(state: PlannerState, config: RunnableConfig) -> dict[
             ),
         },
     ]
+    _status("shortlist", f"Thinking up {slot} ideas from your pantry…")
     raw = await llm.chat_json(prompt, _SHORTLIST_SCHEMA)
     dishes = raw.get("dishes", [])
     if not dishes:
         return {"candidate_dishes": [], "error": "no_dishes_shortlisted"}
+    _status("shortlist", f"Shortlisted {len(dishes)} dishes")
     return {"candidate_dishes": dishes, "error": None}
+
+
+def cuisine_rank(cuisine: str | None, priority: list[str]) -> int:
+    """Rank index for a cuisine; unlisted or missing cuisines sort last."""
+    if not cuisine:
+        return len(priority)
+    normalized = str(cuisine).strip().lower()
+    try:
+        return priority.index(normalized)
+    except ValueError:
+        return len(priority)
+
+
+async def rank_dishes(state: PlannerState, config: RunnableConfig) -> dict[str, Any]:
+    """Order the shortlist by household cuisine preference.
+
+    Stable sort, so the model's own ordering breaks ties within a cuisine.
+    Main and toddler dishes are ranked independently so a toddler dish is never
+    pushed out of the plan by better-ranked adult dishes.
+    """
+    priority = state.get("cuisine_priority") or []
+    dishes = list(state.get("candidate_dishes") or [])
+    if not priority or not dishes:
+        return {}
+    _status("rank", f"Ranking by cuisine preference ({', '.join(priority)})")
+
+    def sort_group(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(group, key=lambda d: cuisine_rank(d.get("cuisine"), priority))
+
+    mains = sort_group([d for d in dishes if d.get("audience") != "toddler"])
+    toddler = sort_group([d for d in dishes if d.get("audience") == "toddler"])
+    return {"candidate_dishes": mains + toddler}
 
 
 async def allocate_inventory(state: PlannerState, config: RunnableConfig) -> dict[str, Any]:
     db, _llm = _cfg(config)
     if state.get("error"):
         return {}
+    _status("allocate", "Checking what your stock actually covers…")
     allocator = InventoryAllocator(db)
     feasible: list[dict] = []
     for dish_data in state.get("candidate_dishes") or []:
@@ -269,6 +350,7 @@ async def allocate_inventory(state: PlannerState, config: RunnableConfig) -> dic
                 dish_data["name"],
                 result.infeasible_ingredients,
             )
+    _status("allocate", f"{len(feasible)} dish(es) can be cooked from stock")
     return {"feasible_dishes": feasible}
 
 
@@ -345,9 +427,14 @@ async def write_recipes(state: PlannerState, config: RunnableConfig) -> dict[str
 
     plan = MealPlan(week_start=date.today(), session_id=session_id)
     db.add(plan)
-    db.flush()
+    # Commit rather than flush: an open write transaction would hold the SQLite
+    # write lock for the whole of the first recipe generation, blocking any
+    # other writer (receipt confirm, pantry edit) for ~a minute.
+    db.commit()
+    plan_id = plan.id
 
-    for dish_data in (state.get("feasible_dishes") or [])[:MAX_SHORTLIST_DISHES]:
+    queue = (state.get("feasible_dishes") or [])[:MAX_SHORTLIST_DISHES]
+    for index, dish_data in enumerate(queue, start=1):
         audience = MealAudience(dish_data.get("audience", "main"))
 
         if audience == MealAudience.toddler:
@@ -371,8 +458,13 @@ async def write_recipes(state: PlannerState, config: RunnableConfig) -> dict[str
             )
             if not report.safe:
                 logger.warning("Toddler safety violation in dish %r", dish_data["name"])
+                _emit({"type": "safety", "report": safety_reports[-1]})
                 continue
 
+        _status(
+            "recipe",
+            f"Writing recipe {index} of {len(queue)}: {dish_data['name']}…",
+        )
         recipe_prompt = [
             {
                 "role": "system",
@@ -405,19 +497,21 @@ async def write_recipes(state: PlannerState, config: RunnableConfig) -> dict[str
         ]
         recipe_raw = await llm.chat_json(recipe_prompt, _RECIPE_SCHEMA)
 
+        cuisine = dish_data.get("cuisine")
         dish = Dish(
             name=dish_data["name"],
             description=dish_data.get("description"),
             recipe_json=json.dumps(recipe_raw.get("recipe", {})),
             suitable_slots=dish_data.get("slot", slot),
             audience=audience,
+            cuisine=str(cuisine).strip().lower() if cuisine else None,
             last_suggested_at=datetime.utcnow(),
         )
         db.add(dish)
         db.flush()
 
         planned = PlannedMeal(
-            plan_id=plan.id,
+            plan_id=plan_id,
             dish_id=dish.id,
             day=date.today(),
             slot=MealSlot(dish_data.get("slot", slot)),
@@ -425,19 +519,25 @@ async def write_recipes(state: PlannerState, config: RunnableConfig) -> dict[str
             servings=total_servings,
         )
         db.add(planned)
-        planned_meals.append(
-            {
-                "dish_name": dish.name,
-                "dish_id": dish.id,
-                "slot": planned.slot.value,
-                "audience": audience.value,
-                "recipe": recipe_raw.get("recipe", {}),
-            }
-        )
+        db.flush()
+        meal = {
+            "dish_name": dish.name,
+            "dish_id": dish.id,
+            "planned_meal_id": planned.id,
+            "slot": planned.slot.value,
+            "audience": audience.value,
+            "cuisine": dish.cuisine,
+            "recipe": recipe_raw.get("recipe", {}),
+        }
+        planned_meals.append(meal)
+        # Commit per dish: a streamed card is shown as soon as it is emitted, so
+        # the row backing it must already be durable if the client disconnects.
+        db.commit()
+        _emit({"type": "meal", "meal": meal})
 
     db.commit()
     return {
-        "plan_id": plan.id,
+        "plan_id": plan_id,
         "planned_meals": planned_meals,
         "safety_reports": safety_reports,
         "pending_questions": [],
@@ -448,7 +548,7 @@ async def write_recipes(state: PlannerState, config: RunnableConfig) -> dict[str
 def route_after_shortlist(state: PlannerState) -> str:
     if state.get("error") or not state.get("candidate_dishes"):
         return "empty"
-    return "allocate"
+    return "rank"
 
 
 def route_after_allocate(state: PlannerState) -> str:

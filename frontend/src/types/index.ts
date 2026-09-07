@@ -58,8 +58,10 @@ export interface ReceiptUploadResult {
 export interface PlannedMeal {
   dish_name: string;
   dish_id: number;
+  planned_meal_id: number;
   slot: string;
   audience: "main" | "toddler";
+  cuisine?: string | null;
   recipe: {
     servings: number;
     prep_minutes: number;
@@ -78,6 +80,16 @@ export interface SuggestResult {
   message?: string;
   error?: string;
 }
+
+export type SafetyReport = NonNullable<SuggestResult["safety_reports"]>[number];
+
+/** Events emitted by POST /meals/suggest/stream. */
+export type SuggestEvent =
+  | { type: "status"; step: string; message: string }
+  | { type: "meal"; meal: PlannedMeal }
+  | { type: "safety"; report: SafetyReport }
+  | { type: "done"; result: SuggestResult }
+  | { type: "error"; message: string };
 
 export interface CookResult {
   cook_event_id: number;

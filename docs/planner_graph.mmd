@@ -7,6 +7,7 @@ graph TD;
 	__start__([<p>__start__</p>]):::first
 	load_context(load_context)
 	shortlist(shortlist)
+	rank_by_cuisine(rank_by_cuisine)
 	allocate(allocate)
 	ask_clarifications(ask_clarifications)
 	write_recipes(write_recipes)
@@ -16,8 +17,9 @@ graph TD;
 	allocate -.-> ask_clarifications;
 	allocate -.-> write_recipes;
 	load_context --> shortlist;
+	rank_by_cuisine --> allocate;
 	shortlist -. &nbsp;empty&nbsp; .-> __end__;
-	shortlist -.-> allocate;
+	shortlist -. &nbsp;rank&nbsp; .-> rank_by_cuisine;
 	ask_clarifications --> __end__;
 	write_recipes --> __end__;
 	classDef default fill:#f2f0ff,line-height:1.2
