@@ -15,6 +15,7 @@ from app.schemas.feedback import (
     PreferenceEntry,
 )
 from app.services import feedback as feedback_svc
+from app.services import metrics as metrics_svc
 from app.services import preference as preference_svc
 
 logger = logging.getLogger(__name__)
@@ -117,3 +118,21 @@ def sweep_skipped(db: DB):
     if recorded:
         preference_svc.rebuild_profiles(db)
     return {"status": "swept", "recorded": recorded}
+
+
+@router.get("/metrics")
+def current_metrics(db: DB, window_days: int = Query(30, ge=1, le=365)):
+    """Suggestion quality right now, measured live rather than from snapshots."""
+    return metrics_svc.compute(db, window_days)
+
+
+@router.get("/metrics/history")
+def metrics_history(db: DB, limit: int = Query(30, le=365)):
+    """Past snapshots, newest first. A single value says little; the trend does."""
+    return metrics_svc.history(db, limit)
+
+
+@router.post("/metrics/snapshot")
+def capture_metrics(db: DB, window_days: int = Query(30, ge=1, le=365)):
+    """Record a snapshot. Normally run by the background worker."""
+    return metrics_svc.snapshot(db, window_days)

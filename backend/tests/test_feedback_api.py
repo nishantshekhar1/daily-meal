@@ -6,22 +6,9 @@ rebuild-on-rate side effect are all covered.
 """
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
-
-from app.db.session import get_session
-from app.main import app
 from app.models import FeedbackSignal, PreferenceScope
 from app.services import feedback as fb
 from app.services import preference as pref
-
-
-@pytest.fixture
-def client(db):
-    app.dependency_overrides[get_session] = lambda: db
-    with TestClient(app) as c:
-        yield c
-    app.dependency_overrides.clear()
 
 
 def test_rate_meal_records_and_rebuilds(client, db, make_meal):

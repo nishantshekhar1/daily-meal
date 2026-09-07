@@ -275,17 +275,29 @@ def _upsert_alias(session: Session, ingredient_id: int, alias: str) -> None:
         )
 
 
+def seed_into(session: Session) -> int:
+    """Seed canonical ingredients into an arbitrary session.
+
+    Split out from :func:`seed` so evaluation fixtures can build a throwaway
+    database with the same ingredient vocabulary as production — resolution and
+    unit conversion are part of what is being evaluated, so they must not be
+    stubbed.
+    """
+    for row in SEED:
+        ing = _upsert_ingredient(session, row)
+        # Also add the canonical name itself as an alias
+        _upsert_alias(session, ing.id, ing.name)
+        for alias in row.get("aliases", []):
+            _upsert_alias(session, ing.id, alias)
+    session.commit()
+    return len(SEED)
+
+
 def seed() -> None:
     create_db_and_tables()
     with Session(engine) as session:
-        for row in SEED:
-            ing = _upsert_ingredient(session, row)
-            # Also add the canonical name itself as an alias
-            _upsert_alias(session, ing.id, ing.name)
-            for alias in row.get("aliases", []):
-                _upsert_alias(session, ing.id, alias)
-        session.commit()
-    print(f"Seeded {len(SEED)} ingredients.")
+        count = seed_into(session)
+    print(f"Seeded {count} ingredients.")
 
 
 if __name__ == "__main__":
