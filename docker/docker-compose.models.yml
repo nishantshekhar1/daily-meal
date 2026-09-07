@@ -1,0 +1,78 @@
+# GPU box: model serving via vLLM
+# Run on the Linux machine with the 2x RTX 4090s.
+#
+# Before starting:
+#   1. Download models to ./models/ (see scripts/download_models.sh)
+#   2. Set HUGGING_FACE_HUB_TOKEN if needed
+#   3. docker compose -f docker/docker-compose.models.yml up -d
+#
+# VRAM budget on 48GB (2x24GB, PCIe only, no NVLink):
+#   - Qwen3-VL 32B AWQ  ~20 GB   port 8010  (reasoning + vision)
+#   - PaddleOCR-VL 1.6  ~ 2 GB   port 8011  (receipt OCR)
+#   - Qwen3-Embed 0.6B  ~ 1 GB   port 8012  (embeddings)
+#   - KV cache headroom ~25 GB
+
+services:
+  vllm-reasoning:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0,1"
+      HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN:-}"
+    volumes:
+      - ./models:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen3-VL-32B-Instruct-AWQ
+      --tensor-parallel-size 2
+      --gpu-memory-utilization 0.85
+      --max-model-len 32768
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --trust-remote-code
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "8010:8000"
+    restart: unless-stopped
+    shm_size: "8g"
+    ipc: host
+
+  vllm-ocr:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "0"
+      HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN:-}"
+    volumes:
+      - ./models:/root/.cache/huggingface
+    command: >
+      --model PaddlePaddle/PaddleOCR-VL-1.6
+      --trust-remote-code
+      --max-num-batched-tokens 16384
+      --no-enable-prefix-caching
+      --mm-processor-cache-gb 0
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "8011:8000"
+    restart: unless-stopped
+    shm_size: "4g"
+
+  vllm-embedding:
+    image: vllm/vllm-openai:latest
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "1"
+      HUGGING_FACE_HUB_TOKEN: "${HUGGING_FACE_HUB_TOKEN:-}"
+    volumes:
+      - ./models:/root/.cache/huggingface
+    command: >
+      --model Qwen/Qwen3-Embedding-0.6B
+      --task embed
+      --trust-remote-code
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "8012:8000"
+    restart: unless-stopped
+    shm_size: "2g"
