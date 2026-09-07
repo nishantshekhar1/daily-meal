@@ -41,6 +41,38 @@ def test_fingerprint_is_stable_when_nothing_changes(db, make_meal):
     assert prewarm.fingerprint(db) == prewarm.fingerprint(db)
 
 
+def test_fingerprint_changes_between_rebuilds_in_the_same_second(db, make_meal):
+    """Caught by an end-to-end run, missed by the first version of this file.
+
+    rebuild_profiles stamps every row with a single utcnow(), so a version
+    token derived from updated_at is identical for two rebuilds inside the same
+    second — and a stale plan kept being served. The token hashes scores
+    instead.
+    """
+    plan, _, first = make_meal(name="A", cuisine="indian")
+    fb.record(db, first.id, FeedbackSignal.thumbs_up)
+    pref.rebuild_profiles(db)
+    before = prewarm.fingerprint(db)
+
+    _, _, second = make_meal(name="B", cuisine="thai", plan=plan)
+    fb.record(db, second.id, FeedbackSignal.thumbs_down)
+    pref.rebuild_profiles(db)
+
+    assert prewarm.fingerprint(db) != before
+
+
+def test_rebuild_that_changes_nothing_keeps_the_cached_plan(db, make_meal):
+    """The scheduled rebuild must not throw away a plan it did not invalidate."""
+    _, _, planned = make_meal()
+    fb.record(db, planned.id, FeedbackSignal.thumbs_up)
+    pref.rebuild_profiles(db)
+    prewarm.write_cache(db, "dinner", {"planned_meals": [{"dish_name": "Dal"}]})
+
+    pref.rebuild_profiles(db)
+
+    assert prewarm.read_cache(db, "dinner") is not None
+
+
 def test_cached_plan_is_dropped_after_feedback(db, make_meal):
     _, _, planned = make_meal()
     prewarm.write_cache(db, "dinner", {"planned_meals": [{"dish_name": "Dal"}]})

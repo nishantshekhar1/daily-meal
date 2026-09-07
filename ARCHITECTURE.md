@@ -385,7 +385,9 @@ A short learned-preference block is also injected into the shortlist prompt, cap
 
 Repetition avoidance also finally reads `Dish.last_suggested_at`, which had been written on every suggestion since the beginning and never read.
 
-**Cache interaction.** Learned preference is folded into the prewarm fingerprint. Without that, feedback would be recorded and aggregated correctly and then never reach the user, because a plan cached before the household rated anything would keep being served until the pantry happened to change. This is the subtlest failure in the whole design and `test_fingerprint_changes_when_preferences_change` exists to guard it.
+**Cache interaction.** Learned preference is folded into the prewarm fingerprint. Without that, feedback would be recorded and aggregated correctly and then never reach the user, because a plan cached before the household rated anything would keep being served until the pantry happened to change. This is the subtlest failure in the whole design.
+
+The version token folded into the fingerprint hashes the profile scores themselves, not `updated_at`. A timestamp is cheaper but wrong in both directions: `rebuild_profiles` stamps every row with a single `utcnow()`, so two rebuilds inside the same second are indistinguishable and a stale plan survives feedback that should have invalidated it; and a scheduled rebuild that changes nothing would discard a perfectly good plan. The first of those was a real bug, found by an end-to-end run rather than by the unit test that was supposed to cover it — the unit test only compared "no profiles yet" against "some profiles", which changes the token either way.
 
 ### Evaluate
 

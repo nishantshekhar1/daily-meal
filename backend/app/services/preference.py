@@ -8,6 +8,7 @@ module decides how to order them.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass, field
@@ -315,15 +316,39 @@ def recently_suggested(db: Session, days: int = 3, limit: int = 12) -> list[str]
 
 
 def profile_version(db: Session) -> str:
-    """Cheap version token that changes whenever learned preferences change.
+    """Version token that changes whenever learned preference scores change.
 
     Folded into the prewarm cache fingerprint. Without it a freshly learned
     preference would not reach the user until the pantry happened to change.
+
+    Hashes the scores themselves rather than ``updated_at``. A timestamp is
+    cheaper but wrong in both directions: ``rebuild_profiles`` stamps every row
+    with one ``utcnow()``, so two rebuilds inside the same second are
+    indistinguishable and the cache survives feedback it should have been
+    invalidated by; and a scheduled rebuild that changes nothing would discard
+    a perfectly good plan. Content hashing is correct by construction.
     """
-    rows = list(db.exec(select(PreferenceProfile.updated_at)).all())
+    rows = db.exec(
+        select(
+            PreferenceProfile.scope,
+            PreferenceProfile.scope_key,
+            PreferenceProfile.audience,
+            PreferenceProfile.score,
+        )
+    ).all()
     if not rows:
         return "none"
-    return max(rows).isoformat(timespec="seconds")
+    payload = sorted(
+        (
+            scope.value if hasattr(scope, "value") else str(scope),
+            str(key),
+            str(audience),
+            round(float(score), 6),
+        )
+        for scope, key, audience, score in rows
+    )
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode())
+    return digest.hexdigest()[:16]
 
 
 def has_signal(db: Session) -> bool:
