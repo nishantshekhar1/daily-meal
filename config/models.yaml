@@ -52,6 +52,7 @@ preferences:
   max_suggestions: 3
 
 # ── Feature flags ───────────────────────────────────────────────────────────
+features:
   # ── Web search ─────────────────────────────────────────────────────────────
   # Enrich the shortlist with recipe ideas from the web. Off by default: this
   # is the one feature that sends data off the machine, so enabling it trades
@@ -61,7 +62,7 @@ preferences:
   # are inspiration only — dishes are still constrained to pantry stock. Any
   # failure (no key, unreachable, slow) falls back to the model's own knowledge
   # rather than failing the request.
-  web_search: false
+  web_search: true
 
   # "tavily"  → hosted API, needs TAVILY_API_KEY in backend/.env
   # "searxng" → self-hosted instance, keeps everything on your network
