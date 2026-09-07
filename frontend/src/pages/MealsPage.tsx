@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { MealFeedback } from "@/components/MealFeedback";
 import { apiFetch, apiStream } from "@/lib/utils";
 import type {
   SuggestResult,
@@ -23,6 +24,7 @@ import type {
   SuggestStatus,
   PlannedMeal,
   CookResult,
+  PlanFeedback,
 } from "@/types";
 
 const SLOT_LABELS: Record<string, string> = {
@@ -86,6 +88,15 @@ export default function MealsPage() {
     queryFn: () =>
       apiFetch<SuggestStatus>(`/meals/suggest/status?slot=${selectedSlot}`),
     refetchInterval: 60_000,
+  });
+
+  // Ratings already given for this plan, so reopening it shows the buttons in
+  // their stored state instead of blank.
+  const planFeedback = useQuery({
+    queryKey: ["plan-feedback", result?.plan_id],
+    queryFn: () => apiFetch<PlanFeedback>(`/feedback/plan/${result?.plan_id}`),
+    enabled: result?.plan_id != null,
+    staleTime: Infinity,
   });
 
   const answerQuestion = useMutation({
@@ -374,6 +385,18 @@ export default function MealsPage() {
                   <CheckCircle2 className="h-4 w-4 mr-1" />
                   Cooked!
                 </Button>
+              </div>
+
+              <div className="border-t pt-2">
+                {/* Keyed on the stored rating so the control picks up its
+                    initial state once the plan's existing feedback loads. */}
+                <MealFeedback
+                  key={`${meal.planned_meal_id}-${
+                    planFeedback.data?.[meal.planned_meal_id]?.signal ?? "none"
+                  }`}
+                  plannedMealId={meal.planned_meal_id}
+                  initial={planFeedback.data?.[meal.planned_meal_id]?.signal ?? null}
+                />
               </div>
             </CardContent>
           </Card>

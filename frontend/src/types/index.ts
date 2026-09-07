@@ -107,3 +107,26 @@ export interface CookResult {
   deductions: Array<{ lot_id: number; ingredient_name: string; quantity_deducted: number; unit: string; lot_exhausted: boolean }>;
   exhaustion_candidates: Array<{ lot_id: number; ingredient_name: string; quantity: number; unit: string }>;
 }
+
+/** Ratings a person can give. Cooked/skipped/rerolled are derived server-side. */
+export type FeedbackSignal = "thumbs_up" | "thumbs_down";
+
+export type FeedbackReason =
+  | "too_bland"
+  | "too_complex"
+  | "disliked_ingredient"
+  | "too_repetitive"
+  | "wrong_portion";
+
+export interface MealFeedbackResponse {
+  status: string;
+  planned_meal_id: number;
+  signal: FeedbackSignal;
+  reason: FeedbackReason | null;
+}
+
+/** Map of planned_meal_id -> existing rating, from GET /feedback/plan/{id}. */
+export type PlanFeedback = Record<
+  number,
+  { signal: FeedbackSignal; reason: FeedbackReason | null }
+>;

@@ -1,0 +1,207 @@
+"""Turn raw feedback signals into learned preference scores.
+
+Scoring is deliberately plain arithmetic rather than a model: it runs in
+milliseconds on a household's worth of data, is inspectable in the DB, and
+cannot invent a preference the user never expressed. This keeps the app's
+"LLM proposes, Python decides" split intact — the model suggests dishes, this
+module decides how to order them.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+from typing import Iterable, Optional
+
+from sqlmodel import Session, select
+
+from app.models import (
+    Dish,
+    DishFeedback,
+    FeedbackSignal,
+    PreferenceProfile,
+    PreferenceScope,
+)
+
+logger = logging.getLogger(__name__)
+
+# How much each signal moves a score, and in which direction.
+#
+# Explicit ratings outweigh implicit ones because implicit signals are
+# confounded: an uncooked dish may simply have been a lunch idea seen at
+# bedtime. Negative implicit weights are deliberately small — absence of
+# action is weak evidence of dislike.
+SIGNAL_WEIGHTS: dict[FeedbackSignal, float] = {
+    FeedbackSignal.thumbs_up: 1.0,
+    FeedbackSignal.thumbs_down: -1.0,
+    FeedbackSignal.cooked: 0.6,
+    FeedbackSignal.skipped: -0.25,
+    FeedbackSignal.rerolled: -0.15,
+}
+
+# Beta prior. PRIOR_WEIGHT is expressed in units of observations: with a weight
+# of 4, a scope needs roughly four events before its score moves decisively off
+# neutral. This is what stops one bad dinner from suppressing a whole cuisine.
+PRIOR_RATE = 0.5
+PRIOR_WEIGHT = 4.0
+
+# Below this many observations a scope is treated as unknown rather than
+# disliked, which matters for the exploration slot in ranking.
+CONFIDENT_OBSERVATIONS = 3
+
+
+def smoothed_score(positive: float, negative: float) -> float:
+    """Beta-smoothed affinity in [-1, 1]; 0 means no usable signal.
+
+    Uses a symmetric prior so that a scope with no feedback scores exactly 0
+    and therefore never outranks or undercuts anything on its own.
+    """
+    total = positive + negative
+    if total <= 0:
+        return 0.0
+    rate = (positive + PRIOR_WEIGHT * PRIOR_RATE) / (total + PRIOR_WEIGHT)
+    return round(2.0 * rate - 1.0, 6)
+
+
+def dish_ingredient_names(dish: Dish) -> list[str]:
+    """Lowercased ingredient names from a dish's stored recipe.
+
+    Returns an empty list rather than raising when the recipe is missing or
+    malformed — a dish saved by a small model may have neither.
+    """
+    if not dish.recipe_json:
+        return []
+    try:
+        recipe = json.loads(dish.recipe_json)
+    except (ValueError, TypeError):
+        return []
+    if isinstance(recipe, dict) and "recipe" in recipe:
+        recipe = recipe["recipe"]
+    if not isinstance(recipe, dict):
+        return []
+    names = []
+    for ing in recipe.get("ingredients") or []:
+        name = (ing or {}).get("name") if isinstance(ing, dict) else None
+        if name:
+            names.append(str(name).strip().lower())
+    return names
+
+
+def _accumulate(
+    buckets: dict[tuple[PreferenceScope, str, str], list[float]],
+    scope: PreferenceScope,
+    key: Optional[str],
+    audience: str,
+    weight: float,
+) -> None:
+    if not key:
+        return
+    buckets.setdefault((scope, key, audience), [0.0, 0.0, 0.0])
+    bucket = buckets[(scope, key, audience)]
+    if weight >= 0:
+        bucket[0] += weight
+    else:
+        bucket[1] += abs(weight)
+    bucket[2] += 1
+
+
+def rebuild_profiles(db: Session) -> int:
+    """Recompute every PreferenceProfile row from the DishFeedback log.
+
+    A full rebuild rather than an incremental update: the whole history of a
+    single household is small, and this keeps the aggregate a pure function of
+    the event log, so ``SIGNAL_WEIGHTS`` can be retuned and applied
+    retroactively without a migration.
+
+    Returns the number of profile rows written.
+    """
+    events = list(db.exec(select(DishFeedback)).all())
+
+    # dish_id -> ingredient names, resolved once per dish rather than per event
+    dish_ids = {e.dish_id for e in events}
+    ingredients_by_dish: dict[int, list[str]] = {}
+    if dish_ids:
+        for dish in db.exec(select(Dish).where(Dish.id.in_(dish_ids))).all():
+            ingredients_by_dish[dish.id] = dish_ingredient_names(dish)
+
+    # (scope, key, audience) -> [positive, negative, observations]
+    buckets: dict[tuple[PreferenceScope, str, str], list[float]] = {}
+
+    for event in events:
+        weight = SIGNAL_WEIGHTS.get(event.signal, 0.0)
+        if weight == 0.0:
+            continue
+        audience = event.audience or "main"
+
+        _accumulate(buckets, PreferenceScope.cuisine, event.cuisine, audience, weight)
+        _accumulate(
+            buckets, PreferenceScope.dish, str(event.dish_id), audience, weight
+        )
+        # Ingredient scope is where sparse per-dish feedback generalizes. Staples
+        # that appear in both liked and disliked dishes converge toward 0 on
+        # their own, so no hand-maintained stoplist is needed.
+        for name in ingredients_by_dish.get(event.dish_id, []):
+            _accumulate(buckets, PreferenceScope.ingredient, name, audience, weight)
+
+    db.exec(PreferenceProfile.__table__.delete())
+
+    now = datetime.utcnow()
+    for (scope, key, audience), (positive, negative, observations) in buckets.items():
+        db.add(
+            PreferenceProfile(
+                scope=scope,
+                scope_key=key,
+                audience=audience,
+                positive=round(positive, 6),
+                negative=round(negative, 6),
+                observations=int(observations),
+                score=smoothed_score(positive, negative),
+                updated_at=now,
+            )
+        )
+    db.commit()
+    logger.info("Rebuilt %d preference profiles from %d events", len(buckets), len(events))
+    return len(buckets)
+
+
+def load_scores(
+    db: Session, scope: PreferenceScope, audience: str = "main"
+) -> dict[str, float]:
+    """Map of scope_key -> score for one scope and audience."""
+    rows = db.exec(
+        select(PreferenceProfile).where(
+            PreferenceProfile.scope == scope,
+            PreferenceProfile.audience == audience,
+        )
+    ).all()
+    return {r.scope_key: r.score for r in rows}
+
+
+def load_observations(
+    db: Session, scope: PreferenceScope, audience: str = "main"
+) -> dict[str, int]:
+    """Map of scope_key -> observation count, for confidence checks."""
+    rows = db.exec(
+        select(PreferenceProfile).where(
+            PreferenceProfile.scope == scope,
+            PreferenceProfile.audience == audience,
+        )
+    ).all()
+    return {r.scope_key: r.observations for r in rows}
+
+
+def profile_version(db: Session) -> str:
+    """Cheap version token that changes whenever learned preferences change.
+
+    Folded into the prewarm cache fingerprint. Without it a freshly learned
+    preference would not reach the user until the pantry happened to change.
+    """
+    rows = list(db.exec(select(PreferenceProfile.updated_at)).all())
+    if not rows:
+        return "none"
+    return max(rows).isoformat(timespec="seconds")
+
+
+def has_signal(db: Session) -> bool:
+    """Whether any learned preference exists yet, for cold-start branching."""
+    return db.exec(select(PreferenceProfile.id).limit(1)).first() is not None

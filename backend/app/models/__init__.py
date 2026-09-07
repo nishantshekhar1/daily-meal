@@ -5,6 +5,14 @@ from .household import HouseholdMember, MemberKind
 from .meal import Dish, MealPlan, PlannedMeal, MealSlot, MealAudience, SuggestionCache
 from .cook import CookEvent, CookDeduction
 from .session import PlanningSession
+from .feedback import (
+    DishFeedback,
+    FeedbackReason,
+    FeedbackSignal,
+    MetricSnapshot,
+    PreferenceProfile,
+    PreferenceScope,
+)
 
 __all__ = [
     "CanonicalIngredient", "IngredientAlias", "IngredientCategory",
@@ -14,4 +22,6 @@ __all__ = [
     "Dish", "MealPlan", "PlannedMeal", "MealSlot", "MealAudience", "SuggestionCache",
     "CookEvent", "CookDeduction",
     "PlanningSession",
+    "DishFeedback", "FeedbackSignal", "FeedbackReason",
+    "PreferenceProfile", "PreferenceScope", "MetricSnapshot",
 ]

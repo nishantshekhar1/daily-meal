@@ -19,6 +19,7 @@ from app.schemas.meal import (
     SuggestRequest,
 )
 from app.services import cook as cook_svc
+from app.services import feedback as feedback_svc
 from app.services import prewarm
 from app.services.llm_client import get_llm_client
 
@@ -41,6 +42,18 @@ def _cacheable(req: SuggestRequest) -> bool:
     return req.session_id is None and not req.force
 
 
+def _log_reroll(db: Session, slot: str) -> None:
+    """Asking for a different plan is a rejection of the one already shown.
+
+    Best-effort: a lost feedback row must never stop the user getting a new
+    suggestion, which is what they actually asked for.
+    """
+    try:
+        feedback_svc.record_reroll(db, slot)
+    except Exception:
+        logger.exception("Could not record reroll feedback for %s", slot)
+
+
 @router.post("/suggest")
 async def suggest(req: SuggestRequest, db: DB):
     """Ask the agent for a meal suggestion.
@@ -53,6 +66,9 @@ async def suggest(req: SuggestRequest, db: DB):
     session_id can be provided to resume a session (after answering questions).
     """
     slot = req.slot or prewarm.current_slot()
+
+    if req.force:
+        _log_reroll(db, slot)
 
     if _cacheable(req):
         cached = prewarm.read_cache(db, slot)
@@ -89,6 +105,9 @@ async def suggest_stream(req: SuggestRequest):
         # yield-dependencies before a streaming body finishes, so the
         # request-scoped session would already be closed in here.
         with Session(engine) as db:
+            if req.force:
+                _log_reroll(db, slot)
+
             if use_cache:
                 cached = prewarm.read_cache(db, slot)
                 if cached is not None:
@@ -193,9 +212,17 @@ def cook_meal(req: CookMealRequest, db: DB):
     """Mark a meal as cooked.  Returns exhaustion candidates for user confirmation."""
     try:
         result = cook_svc.cook_meal(db, req.planned_meal_id)
-        return result
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+    # Cooking a suggestion is the strongest preference signal the app gets for
+    # free. Never let recording it fail the cook itself.
+    try:
+        feedback_svc.record_cooked(db, req.planned_meal_id)
+    except Exception:
+        logger.exception("Could not record cooked feedback for meal %d", req.planned_meal_id)
+
+    return result
 
 
 @router.post("/confirm-exhaustion")

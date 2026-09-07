@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api.routes import household, meals, pantry, receipts
+from app.api.routes import feedback, household, meals, pantry, receipts
 from app.core.config import get_settings
 from app.db.session import create_db_and_tables
 from app.services import prewarm
@@ -61,6 +61,7 @@ app.include_router(pantry.router, prefix="/api/v1")
 app.include_router(receipts.router, prefix="/api/v1")
 app.include_router(meals.router, prefix="/api/v1")
 app.include_router(household.router, prefix="/api/v1")
+app.include_router(feedback.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")
