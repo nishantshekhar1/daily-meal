@@ -1,0 +1,81 @@
+# ── Profile: 16 GB single GPU (RTX 4060 Ti 16GB / 4070 Ti Super / 5060 Ti) ──
+# Select with:  CONFIG_PATH=../config/profiles/16gb.yaml
+#
+# VRAM budget (Q4_K_M):
+#   reasoning  qwen3:14b         ~ 9.0 GB
+#   vision/ocr qwen3-vl:4b       ~ 3.5 GB
+#   embedding  nomic-embed-text  ~ 0.3 GB
+#   total                        ~12.8 GB  → all three stay resident
+#
+# Nothing ever swaps at this tier, so receipt scanning and meal planning are
+# both consistently fast.
+#
+# Quality note: qwen3:14b is dense, so it is slower per token than the 30B-A3B
+# MoE on the 24 GB profile despite being smaller. Shortlisting stays reliable;
+# recipe prose is a little less varied than the larger profiles.
+
+ollama_host: "127.0.0.1"
+
+roles:
+  # ── Reasoning ─────────────────────────────────────────────────────────────
+  reasoning:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3:14b"
+    api_key: "ollama"
+    max_tokens: 4096
+    temperature: 0.4
+
+  # ── Vision (ingredient photos) ────────────────────────────────────────────
+  vision:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:4b"
+    api_key: "ollama"
+    max_tokens: 1024
+    temperature: 0.1
+
+  # ── OCR (receipts) ────────────────────────────────────────────────────────
+  ocr:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:4b"
+    api_key: "ollama"
+    max_tokens: 2048
+    temperature: 0.0
+
+  # ── Embeddings ────────────────────────────────────────────────────────────
+  embedding:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "nomic-embed-text"
+    api_key: "ollama"
+    dimensions: 768
+
+# ── Household preferences ───────────────────────────────────────────────────
+preferences:
+  cuisine_priority:
+    - indian
+    - mexican
+    - italian
+
+  max_suggestions: 3
+
+# ── Feature flags ───────────────────────────────────────────────────────────
+# Must live at the top level, not under `preferences` — Settings.features reads
+# them from here, and keys placed elsewhere silently fall back to defaults.
+features:
+  # ── Web search ─────────────────────────────────────────────────────────────
+  web_search: false
+  web_search_provider: "tavily"
+  tavily_search_depth: "basic"
+  searxng_url: "http://localhost:8080"
+  web_search_timeout_s: 8
+  web_search_max_results: 5
+
+  # Everything is resident, so the background refresh costs nothing but compute.
+  prewarm_suggestions: true
+  prewarm_interval_s: 300
+
+# ── Application ─────────────────────────────────────────────────────────────
+app:
+  db_url: "sqlite:///./data/daily_meal.db"
+  upload_dir: "./uploads"
+  low_stock_threshold_pct: 15
+  planning_session_ttl_s: 3600

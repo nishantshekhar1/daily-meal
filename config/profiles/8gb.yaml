@@ -1,0 +1,96 @@
+# ── Profile: 8 GB single GPU (RTX 3070 / laptop) — minimum viable ───────────
+# Select with:  CONFIG_PATH=../config/profiles/8gb.yaml
+#
+# VRAM budget (Q4_K_M):
+#   reasoning  qwen3:4b          ~ 3.0 GB
+#   vision/ocr qwen3-vl:2b       ~ 1.9 GB
+#   embedding  nomic-embed-text  ~ 0.3 GB
+#   total                        ~ 5.2 GB
+#
+# ── Read this before using the profile ──────────────────────────────────────
+# This tier is best-effort and will fail intermittently.
+#
+# Both planner schemas (_SHORTLIST_SCHEMA and _RECIPE_SCHEMA in
+# backend/app/agents/planner_nodes.py) nest three levels deep:
+#   root → dishes[] → ingredients[]
+# Quantized 4B-class models are known to emit empty arrays at that depth. The
+# planner graph has no retry path — shortlist runs once, and a malformed
+# response ends the request — so a bad generation surfaces as "no dishes could
+# be suggested" rather than being repaired.
+#
+# What still holds regardless of model size: InventoryAllocator does all stock
+# arithmetic and validate_toddler_dish enforces the CDC/NHS rules, both in
+# plain Python. A weak model cannot corrupt your pantry or produce an unsafe
+# toddler dish. It just fails to produce a plan.
+#
+# If you intend to run here permanently, the graph needs retry-with-repair and
+# flatter schemas. That is a code change, not a config one.
+
+ollama_host: "127.0.0.1"
+
+roles:
+  # ── Reasoning ─────────────────────────────────────────────────────────────
+  reasoning:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3:4b"
+    api_key: "ollama"
+    max_tokens: 2048
+    temperature: 0.3   # lower than other profiles: small models hold schema better
+
+  # ── Vision (ingredient photos) ────────────────────────────────────────────
+  vision:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:2b"
+    api_key: "ollama"
+    max_tokens: 1024
+    temperature: 0.1
+
+  # ── OCR (receipts) ────────────────────────────────────────────────────────
+  # 2B is weak on dense thermal print. Review every receipt line carefully.
+  ocr:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:2b"
+    api_key: "ollama"
+    max_tokens: 2048
+    temperature: 0.0
+
+  # ── Embeddings ────────────────────────────────────────────────────────────
+  embedding:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "nomic-embed-text"
+    api_key: "ollama"
+    dimensions: 768
+
+# ── Household preferences ───────────────────────────────────────────────────
+preferences:
+  cuisine_priority:
+    - indian
+    - mexican
+    - italian
+
+  max_suggestions: 2
+
+# ── Feature flags ───────────────────────────────────────────────────────────
+# Must live at the top level, not under `preferences` — Settings.features reads
+# them from here, and keys placed elsewhere silently fall back to defaults.
+features:
+  # ── Web search ─────────────────────────────────────────────────────────────
+  # Leave off here. Web context lengthens the shortlist prompt, and a 4B model
+  # handling a longer prompt is more likely to break the schema.
+  web_search: false
+  web_search_provider: "tavily"
+  tavily_search_depth: "basic"
+  searxng_url: "http://localhost:8080"
+  web_search_timeout_s: 8
+  web_search_max_results: 5
+
+  # Off: no spare capacity for background generation.
+  prewarm_suggestions: false
+  prewarm_interval_s: 300
+
+# ── Application ─────────────────────────────────────────────────────────────
+app:
+  db_url: "sqlite:///./data/daily_meal.db"
+  upload_dir: "./uploads"
+  low_stock_threshold_pct: 15
+  planning_session_ttl_s: 3600

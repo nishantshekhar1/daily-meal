@@ -65,6 +65,26 @@ Open `http://<this-machine-ip>:5173` on any device on the LAN.
 
 ---
 
+## Running on a smaller GPU
+
+The default [config/models.yaml](config/models.yaml) is tuned for the 2x4090 box. To run on a single smaller card, point `CONFIG_PATH` at one of the ready-made profiles in [config/profiles/](config/profiles/):
+
+```bash
+# in backend/.env
+CONFIG_PATH=../config/profiles/16gb.yaml
+```
+
+| Profile | Reasoning | Vision + OCR | Total VRAM |
+|---|---|---|---|
+| `24gb.yaml` | `qwen3:30b-a3b` | `qwen3-vl:8b` | ~25.3 GB |
+| `16gb.yaml` | `qwen3:14b` | `qwen3-vl:4b` | ~12.8 GB |
+| `12gb.yaml` | `qwen3:8b` | `qwen3-vl:4b` | ~9.0 GB |
+| `8gb.yaml` | `qwen3:4b` | `qwen3-vl:2b` | ~5.2 GB |
+
+Inventory arithmetic and toddler safety are plain Python, so a smaller model cannot corrupt your pantry or produce an unsafe toddler dish — it only affects the quality and variety of what gets suggested. See [config/profiles/README.md](config/profiles/README.md) for the per-tier tradeoffs and the `ollama pull` commands.
+
+---
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the live design document.
@@ -86,7 +106,8 @@ daily-meal/
 ├── frontend/             React + Vite + Tailwind
 │   └── src/
 ├── config/
-│   └── models.yaml       LLM role → endpoint mapping
+│   ├── models.yaml       LLM role → endpoint mapping
+│   └── profiles/         per-VRAM-tier model configs
 ├── docker/
 │   ├── docker-compose.models.yml   (deprecated; use Ollama)
 │   └── docker-compose.app.yml      App stack (backend + frontend)

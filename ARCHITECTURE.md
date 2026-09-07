@@ -52,6 +52,23 @@ All roles are swappable via `config/models.yaml` — the app speaks plain OpenAI
 
 **Trade-off:** Dropped specialized PaddleOCR-VL in favor of one VL model under Ollama — simpler ops, slightly weaker dense thermal receipt OCR.
 
+### VRAM profiles
+
+`Settings.config_path` is bound to the `CONFIG_PATH` environment variable, so an entire model lineup is swapped by pointing at a different file. `config/profiles/` holds four complete configurations for running on a single smaller card:
+
+| Profile | Reasoning | Vision + OCR | Total VRAM | `max_suggestions` | `prewarm_suggestions` |
+|---|---|---|---|---|---|
+| `24gb.yaml` | `qwen3:30b-a3b` | `qwen3-vl:8b` | ~25.3 GB | 3 | on |
+| `16gb.yaml` | `qwen3:14b` | `qwen3-vl:4b` | ~12.8 GB | 3 | on |
+| `12gb.yaml` | `qwen3:8b` | `qwen3-vl:4b` | ~9.0 GB | 2 | off |
+| `8gb.yaml` | `qwen3:4b` | `qwen3-vl:2b` | ~5.2 GB | 2 | off |
+
+**Trade-off:** Handled entirely in configuration rather than by adding model-size branching to the planner. The graph stays single-path and there is no tier-specific code to keep in sync, at the cost of the smallest tiers being genuinely unreliable rather than gracefully degraded.
+
+Two non-model knobs move with the tier because they cost VRAM and latency as much as parameter count does. `max_suggestions` sets the generation count per request (`1 + max_suggestions`: one shortlist plus one recipe write each), and `prewarm_suggestions` runs the reasoning model in the background, which contends with the vision model on a card that cannot hold both.
+
+**Where quality actually degrades:** not in correctness. `InventoryAllocator` does all stock arithmetic and `validate_toddler_dish` enforces the age rules, both in plain Python (see *LLM proposes, Python decides* below), so a weak model cannot corrupt the pantry or emit an unsafe toddler dish. It degrades in *shortlist quality* — more generic dishes, and at 4B-class sizes, outright JSON schema failures on the three-level-deep `_SHORTLIST_SCHEMA`. The graph has no retry-with-repair path, so a malformed shortlist ends the request rather than being fixed. Adding that retry is the prerequisite for treating the 8 GB tier as supported.
+
 ---
 
 ## Key classes and functions
@@ -328,4 +345,6 @@ features:
   web_search: false               # enable after SearXNG is running
 ```
 
-Changing `model` or `base_url` under any role is the only thing needed to swap models.
+Changing `model` or `base_url` under any role is the only thing needed to swap models. To swap the whole lineup at once, point `CONFIG_PATH` at a file in `config/profiles/` instead.
+
+Note that `features` is a **top-level** key, not a child of `preferences`. `Settings.features` reads `web_search`, `web_search_provider`, `tavily_search_depth`, `searxng_url`, `web_search_timeout_s`, `web_search_max_results`, `prewarm_suggestions` and `prewarm_interval_s` from there; keys placed under `preferences` are silently ignored and fall back to hardcoded defaults. Only `cuisine_priority` and `max_suggestions` belong under `preferences`.

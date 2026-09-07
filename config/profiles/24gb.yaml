@@ -1,0 +1,89 @@
+# ── Profile: 24 GB single GPU (RTX 4090 / 3090) ─────────────────────────────
+# Select with:  CONFIG_PATH=../config/profiles/24gb.yaml
+#
+# VRAM budget (Q4_K_M):
+#   reasoning  qwen3:30b-a3b     ~19.0 GB
+#   vision/ocr qwen3-vl:8b       ~ 6.0 GB
+#   embedding  nomic-embed-text  ~ 0.3 GB
+#   total                        ~25.3 GB  → slightly over 24 GB
+#
+# Ollama keeps the most recently used model resident and evicts the others, so
+# switching between planning a meal and scanning a receipt costs one model load
+# (roughly 5–15 s). The two never run at the same time, so this is a one-off
+# pause rather than a per-request cost. If you would rather have everything
+# resident, drop vision/ocr to `qwen3-vl:4b` (~3.5 GB) — receipt OCR gets
+# measurably worse on dense thermal print, but nothing ever swaps.
+#
+# Quality note: qwen3:30b-a3b is a mixture-of-experts model — 30B total
+# parameters with ~3B active per token. It decodes at roughly 3B speed while
+# landing well above 8B-class quality, which makes it the best quality-per-GB
+# option at this tier.
+
+ollama_host: "127.0.0.1"
+
+roles:
+  # ── Reasoning ─────────────────────────────────────────────────────────────
+  reasoning:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3:30b-a3b"
+    api_key: "ollama"
+    max_tokens: 4096
+    temperature: 0.4
+
+  # ── Vision (ingredient photos) ────────────────────────────────────────────
+  vision:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:8b"
+    api_key: "ollama"
+    max_tokens: 1024
+    temperature: 0.1
+
+  # ── OCR (receipts) ────────────────────────────────────────────────────────
+  ocr:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "qwen3-vl:8b"
+    api_key: "ollama"
+    max_tokens: 2048
+    temperature: 0.0
+
+  # ── Embeddings ────────────────────────────────────────────────────────────
+  embedding:
+    base_url: "http://{ollama_host}:11434/v1"
+    model: "nomic-embed-text"
+    api_key: "ollama"
+    dimensions: 768
+
+# ── Household preferences ───────────────────────────────────────────────────
+preferences:
+  cuisine_priority:
+    - indian
+    - mexican
+    - italian
+
+  # Each suggestion is one full LLM generation. A 30B-A3B MoE is fast enough
+  # to keep the default of 3.
+  max_suggestions: 3
+
+# ── Feature flags ───────────────────────────────────────────────────────────
+# Must live at the top level, not under `preferences` — Settings.features reads
+# them from here, and keys placed elsewhere silently fall back to defaults.
+features:
+  # ── Web search ─────────────────────────────────────────────────────────────
+  web_search: false
+  web_search_provider: "tavily"
+  tavily_search_depth: "basic"
+  searxng_url: "http://localhost:8080"
+  web_search_timeout_s: 8
+  web_search_max_results: 5
+
+  # Safe to leave on at this tier. The background refresh reloads the reasoning
+  # model if a receipt scan evicted it, but that happens off the request path.
+  prewarm_suggestions: true
+  prewarm_interval_s: 300
+
+# ── Application ─────────────────────────────────────────────────────────────
+app:
+  db_url: "sqlite:///./data/daily_meal.db"
+  upload_dir: "./uploads"
+  low_stock_threshold_pct: 15
+  planning_session_ttl_s: 3600
