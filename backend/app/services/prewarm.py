@@ -62,6 +62,9 @@ def fingerprint(db: Session) -> str:
             "members": sorted(int(m) for m in members),
             "cuisines": settings.cuisine_priority,
             "size": settings.max_suggestions,
+            # Toggling web search (or switching provider) changes what gets
+            # shortlisted, so a plan generated under the old setting is stale.
+            "web": settings.web_search_ready and settings.web_search_provider,
         },
         sort_keys=True,
     )

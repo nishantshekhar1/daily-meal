@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     upload_dir: Path = Path("./uploads")
     log_level: str = "INFO"
 
+    # Secret, so it comes from the environment rather than models.yaml.
+    tavily_api_key: str = ""
+
     # Resolved from models.yaml at startup
     _models_cfg: dict[str, Any] = {}
 
@@ -71,8 +74,35 @@ class Settings(BaseSettings):
         return bool(self.features.get("web_search", False))
 
     @property
+    def web_search_provider(self) -> str:
+        """Which backend serves web search: ``tavily`` or ``searxng``."""
+        return str(self.features.get("web_search_provider", "tavily")).strip().lower()
+
+    @property
     def searxng_url(self) -> str:
         return str(self.features.get("searxng_url", "http://localhost:8080"))
+
+    @property
+    def tavily_search_depth(self) -> str:
+        depth = str(self.features.get("tavily_search_depth", "basic")).strip().lower()
+        return depth if depth in ("basic", "advanced") else "basic"
+
+    @property
+    def web_search_timeout_s(self) -> float:
+        return float(self.features.get("web_search_timeout_s", 8))
+
+    @property
+    def web_search_max_results(self) -> int:
+        return max(1, int(self.features.get("web_search_max_results", 5)))
+
+    @property
+    def web_search_ready(self) -> bool:
+        """Enabled *and* actually usable — Tavily needs a key to work."""
+        if not self.web_search_enabled:
+            return False
+        if self.web_search_provider == "tavily":
+            return bool(self.tavily_api_key)
+        return True
 
     @property
     def preferences(self) -> dict[str, Any]:

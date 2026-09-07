@@ -24,6 +24,7 @@ class PlannerState(TypedDict, total=False):
     has_toddler: bool
     min_toddler_age: Optional[int]
     cuisine_priority: list[str]
+    web_context: str        # recipe ideas from web search; "" when disabled/unavailable
 
     # Intermediate
     candidate_dishes: list[dict[str, Any]]

@@ -1,7 +1,7 @@
 # Daily Meal Planner — Architecture
 
 > **Live document.** Updated alongside every significant code change.
-> Last updated: 2026-09-07 (prewarmed suggestions; streaming suggest endpoint; LangGraph planner)
+> Last updated: 2026-09-07 (web search via Tavily/SearXNG; prewarmed suggestions; streaming suggest)
 
 ---
 
@@ -142,7 +142,7 @@ One household, one writer, local disk. SQLAlchemy abstracts the connection strin
 No receipt line ever auto-commits to the pantry. All lines go through a review screen. A silent OCR error (e.g. `BTRSCCH` read as "butterscotch" instead of "broccoli") corrupts stock and then corrupts every downstream suggestion.
 
 ### Web search off by default
-`features.web_search: false` in `models.yaml`. SearXNG is self-hosted and must be explicitly enabled, preserving the local-only property.
+`features.web_search: false` in `models.yaml`. This is the only feature that sends data off the machine, so enabling it knowingly trades the local-only property for better dish variety. See "Web search" below for the providers and how results are constrained.
 
 ---
 
@@ -161,9 +161,9 @@ No receipt line ever auto-commits to the pantry. All lines go through a review s
 ## Meal planner graph (LangGraph)
 
 ```
-START → load_context → shortlist ─┬─→ rank_by_cuisine → allocate ─┬─→ write_recipes → END
-                                  │                               └─→ ask_clarifications → END
-                                  └─→ END
+START → load_context → search_web → shortlist ─┬─→ rank_by_cuisine → allocate ─┬─→ write_recipes → END
+                                               │                               └─→ ask_clarifications → END
+                                               └─→ END
 ```
 
 **Cuisine priority.** `preferences.cuisine_priority` in `config/models.yaml` lists cuisines
@@ -254,6 +254,49 @@ are still perfectly good while serving plans for food already eaten.
   is the trade being made: idle GPU time is free, user waiting time is not.
 - **Escape hatch:** `force: true` on either suggest endpoint bypasses the cache
   ("Suggest something else" in the UI) and takes the full generation time.
+
+### Web search
+
+Without it, recipes are bounded by what the local model already knows. The
+`search_web` node fetches recipe ideas before shortlisting and passes them to
+the shortlist prompt as inspiration.
+
+Controlled entirely by `features` in `config/models.yaml`:
+
+| Key | Purpose |
+|---|---|
+| `web_search` | Master on/off. Off by default. |
+| `web_search_provider` | `tavily` (hosted) or `searxng` (self-hosted) |
+| `tavily_search_depth` | `basic` or `advanced` (more credits) |
+| `searxng_url` | Instance URL; needs JSON output enabled |
+| `web_search_max_results` | Results fed to the prompt |
+| `web_search_timeout_s` | Per-request budget |
+
+The Tavily key is a secret, so it comes from `TAVILY_API_KEY` in the
+environment rather than the committed YAML. `web_search_ready` is the flag the
+code actually checks: enabled *and* usable, so a `tavily` provider with no key
+is treated as off instead of failing at request time.
+
+- **Trade-off — leaving the machine.** Everything else in this app is local.
+  Tavily sends the query (slot, top cuisine, pantry ingredient names) to a third
+  party. `searxng` exists as the provider for anyone who wants the feature
+  without that; it is self-hosted and keeps queries on the LAN.
+- **Trade-off — inspiration, not instruction.** Search results routinely mention
+  ingredients that are not in stock. The prompt marks them as inspiration only
+  and repeats that dishes must come from the pantry, and `InventoryAllocator`
+  still rejects anything unaffordable afterwards. The model is never given a
+  path to invent stock.
+- **Failure is not an error.** Missing key, unreachable host, timeout, unknown
+  provider and non-JSON responses all return `[]` and log a warning; planning
+  proceeds on the model's own knowledge. A recipe suggestion is not worth
+  failing a request over.
+- **Note:** the older `search_recipes` *tool* (in `agents/tools.py`, for
+  `chat_tools` tool-calling) is still unused. The graph node calls
+  `search_recipes_web()` directly, which is deterministic — Python decides when
+  to search rather than hoping a local model emits a correct tool call.
+- **Tests:** `backend/tests/test_web_search.py` covers the flag, provider
+  dispatch, bearer auth, snippet truncation and the failure fallback with a
+  stubbed HTTP layer (no network, no key).
 
 ## Local run
 

@@ -88,6 +88,88 @@ def get_active_tools(web_search_enabled: bool) -> list[dict]:
     return tools
 
 
+# ── Web search ───────────────────────────────────────────────────────────────
+
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+
+def _normalize_results(raw: list[dict], limit: int) -> list[dict[str, Any]]:
+    """Both providers return title/url/content; flatten to one shape."""
+    return [
+        {
+            "title": r.get("title") or "",
+            "url": r.get("url") or "",
+            "snippet": (r.get("content") or "")[:300],
+        }
+        for r in raw[:limit]
+    ]
+
+
+async def _search_tavily(query: str, limit: int, settings: Any) -> list[dict[str, Any]]:
+    if not settings.tavily_api_key:
+        logger.warning(
+            "web_search_provider is 'tavily' but TAVILY_API_KEY is unset; skipping search"
+        )
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=settings.web_search_timeout_s) as client:
+            resp = await client.post(
+                TAVILY_SEARCH_URL,
+                headers={"Authorization": f"Bearer {settings.tavily_api_key}"},
+                json={
+                    "query": query,
+                    "max_results": limit,
+                    "search_depth": settings.tavily_search_depth,
+                    "include_answer": False,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        # Never include the request headers here — they carry the API key.
+        logger.warning("Tavily search failed: %s", exc)
+        return []
+    return _normalize_results(data.get("results") or [], limit)
+
+
+async def _search_searxng(query: str, limit: int, settings: Any) -> list[dict[str, Any]]:
+    url = settings.searxng_url.rstrip("/") + "/search"
+    try:
+        async with httpx.AsyncClient(timeout=settings.web_search_timeout_s) as client:
+            resp = await client.get(
+                url,
+                params={"q": query, "format": "json", "categories": "general"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        # Includes the common case of an instance without `format: json` enabled.
+        logger.warning("SearXNG search failed (%s): %s", url, exc)
+        return []
+    return _normalize_results(data.get("results") or [], limit)
+
+
+async def search_recipes_web(query: str, *, limit: int = 5) -> list[dict[str, Any]]:
+    """Search the web for recipe ideas using the configured provider.
+
+    Returns ``[]`` on any failure — disabled, missing credentials, unreachable,
+    or slow.  Search is best-effort enrichment, so planning must continue
+    unchanged when it yields nothing.
+    """
+    settings = get_settings()
+    if not settings.web_search_enabled:
+        return []
+
+    provider = settings.web_search_provider
+    if provider == "tavily":
+        return await _search_tavily(query, limit, settings)
+    if provider == "searxng":
+        return await _search_searxng(query, limit, settings)
+
+    logger.warning("Unknown web_search_provider %r; skipping search", provider)
+    return []
+
+
 # ── Tool implementations ─────────────────────────────────────────────────────
 
 class ToolExecutor:
@@ -170,25 +252,11 @@ class ToolExecutor:
     async def _search_recipes(self, args: dict) -> str:
         if not self._settings.web_search_enabled:
             return json.dumps({"error": "web_search_disabled"})
-        query: str = args.get("query", "")
-        url = self._settings.searxng_url.rstrip("/") + "/search"
-        timeout = self._settings.features.get("web_search_timeout_s", 8)
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.get(
-                    url,
-                    params={"q": query, "format": "json", "categories": "general"},
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                results = [
-                    {"title": r.get("title"), "url": r.get("url"), "snippet": r.get("content", "")[:300]}
-                    for r in data.get("results", [])[:5]
-                ]
-                return json.dumps({"results": results})
-        except Exception as exc:
-            logger.warning("SearXNG search failed: %s", exc)
-            return json.dumps({"error": str(exc)})
+        results = await search_recipes_web(
+            args.get("query", ""),
+            limit=self._settings.web_search_max_results,
+        )
+        return json.dumps({"results": results})
 
     async def _get_pantry(self) -> str:
         stmt = (

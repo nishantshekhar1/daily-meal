@@ -2,12 +2,12 @@
 
 Graph topology (see ``planner_graph.py``):
 
-  START → load_context → shortlist ─┬─→ rank_by_cuisine → allocate ─┬─→ write_recipes → END
-                                    │                               └─→ ask_clarifications → END
-                                    └─→ END (empty shortlist)
+  START → load_context → search_web → shortlist ─┬─→ rank_by_cuisine → allocate ─┬─→ write_recipes → END
+                                                 │                               └─→ ask_clarifications → END
+                                                 └─→ END (empty shortlist)
 
 LLM proposes dishes/recipes; Python owns cuisine ranking, inventory math and
-toddler safety.
+toddler safety.  ``search_web`` is a no-op unless web search is enabled.
 """
 from __future__ import annotations
 

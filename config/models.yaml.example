@@ -53,9 +53,26 @@ preferences:
 
 # ── Feature flags ───────────────────────────────────────────────────────────
 features:
+  # ── Web search ─────────────────────────────────────────────────────────────
+  # Enrich the shortlist with recipe ideas from the web. Off by default: this
+  # is the one feature that sends data off the machine, so enabling it trades
+  # the app's local-only property for better variety.
+  #
+  # When on, the planner runs a `search_web` step before shortlisting. Results
+  # are inspiration only — dishes are still constrained to pantry stock. Any
+  # failure (no key, unreachable, slow) falls back to the model's own knowledge
+  # rather than failing the request.
   web_search: false
+
+  # "tavily"  → hosted API, needs TAVILY_API_KEY in backend/.env
+  # "searxng" → self-hosted instance, keeps everything on your network
+  #             (requires JSON output enabled: `formats: [html, json]`)
+  web_search_provider: "tavily"
+
+  tavily_search_depth: "basic"     # basic | advanced (advanced costs more credits)
   searxng_url: "http://localhost:8080"
   web_search_timeout_s: 8
+  web_search_max_results: 5
 
   # Generate the current slot's suggestions in the background so opening the
   # app shows a plan immediately instead of waiting on the model.

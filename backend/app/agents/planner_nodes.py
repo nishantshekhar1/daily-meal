@@ -17,7 +17,7 @@ from sqlmodel import Session, select
 from app.agents.graph_state import PlannerState
 from app.agents.inventory import DishRequirement, InventoryAllocator
 from app.agents.safety import validate_toddler_dish
-from app.agents.tools import ToolExecutor
+from app.agents.tools import ToolExecutor, search_recipes_web
 from app.core.config import get_settings
 from app.models import (
     CanonicalIngredient,
@@ -228,6 +228,7 @@ async def load_context(state: PlannerState, config: RunnableConfig) -> dict[str,
         "has_toddler": bool(toddlers),
         "min_toddler_age": min(toddler_ages) if toddler_ages else None,
         "cuisine_priority": get_settings().cuisine_priority,
+        "web_context": "",
         "candidate_dishes": [],
         "feasible_dishes": [],
         "pending_questions": [],
@@ -237,6 +238,59 @@ async def load_context(state: PlannerState, config: RunnableConfig) -> dict[str,
         "message": None,
         "error": None,
     }
+
+
+def _pantry_ingredient_names(pantry_text: str, limit: int) -> list[str]:
+    """Pull ingredient names back out of the rendered pantry summary lines."""
+    names: list[str] = []
+    for line in (pantry_text or "").splitlines():
+        stripped = line.strip().lstrip("-").strip()
+        if not stripped or stripped.startswith("("):
+            continue
+        name = stripped.split(":", 1)[0].strip()
+        if name:
+            names.append(name)
+    return names[:limit]
+
+
+def web_search_query(state: PlannerState) -> str:
+    """Build the search query from the slot, top cuisine and what's in stock."""
+    cuisines = state.get("cuisine_priority") or []
+    parts = [
+        cuisines[0] if cuisines else "",
+        str(state.get("slot") or "dinner"),
+        "recipe",
+        *_pantry_ingredient_names(state.get("pantry_text", ""), 5),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+async def search_web(state: PlannerState, config: RunnableConfig) -> dict[str, Any]:
+    """Fetch recipe ideas from the web to widen the shortlist.
+
+    A no-op unless ``features.web_search`` is on and the provider is usable
+    (Tavily needs an API key), and best-effort even then: any failure leaves
+    ``web_context`` empty and planning proceeds on the model's own knowledge.
+    """
+    settings = get_settings()
+    if not settings.web_search_ready:
+        return {}
+
+    query = web_search_query(state)
+    _status("web_search", f"Searching the web ({settings.web_search_provider})…")
+    results = await search_recipes_web(query, limit=settings.web_search_max_results)
+
+    if not results:
+        _status("web_search", "No web results — using the model's own knowledge")
+        return {"web_context": ""}
+
+    _status("web_search", f"Found {len(results)} web result(s)")
+    lines = [
+        f"- {r['title']}: {r['snippet']}".rstrip(": ")
+        for r in results
+        if r.get("title")
+    ]
+    return {"web_context": "\n".join(lines)}
 
 
 async def shortlist_dishes(state: PlannerState, config: RunnableConfig) -> dict[str, Any]:
@@ -282,6 +336,16 @@ async def shortlist_dishes(state: PlannerState, config: RunnableConfig) -> dict[
             "content": (
                 f"Household members:\n{state.get('household_text', '')}\n\n"
                 f"Current pantry:\n{state.get('pantry_text', '')}"
+                + (
+                    # Inspiration only. Search results routinely mention
+                    # ingredients that are not in stock, and the pantry remains
+                    # the only source of truth for what can be cooked.
+                    "\n\nRecipe ideas found on the web — use them for inspiration "
+                    "only, and still only use ingredients from the pantry above:\n"
+                    + state["web_context"]
+                    if state.get("web_context")
+                    else ""
+                )
             ),
         },
     ]

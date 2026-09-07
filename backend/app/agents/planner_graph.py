@@ -14,6 +14,7 @@ from app.agents.planner_nodes import (
     rank_dishes,
     route_after_allocate,
     route_after_shortlist,
+    search_web,
     shortlist_dishes,
     write_recipes,
 )
@@ -28,6 +29,9 @@ def build_planner_graph() -> Any:
     g: StateGraph = StateGraph(PlannerState)
 
     g.add_node("load_context", load_context)
+    # Always in the topology; no-ops unless features.web_search is enabled, so
+    # the exported diagram shows the capability either way.
+    g.add_node("search_web", search_web)
     g.add_node("shortlist", shortlist_dishes)
     g.add_node("rank_by_cuisine", rank_dishes)
     g.add_node("allocate", allocate_inventory)
@@ -35,7 +39,8 @@ def build_planner_graph() -> Any:
     g.add_node("write_recipes", write_recipes)
 
     g.add_edge(START, "load_context")
-    g.add_edge("load_context", "shortlist")
+    g.add_edge("load_context", "search_web")
+    g.add_edge("search_web", "shortlist")
     g.add_conditional_edges(
         "shortlist",
         route_after_shortlist,

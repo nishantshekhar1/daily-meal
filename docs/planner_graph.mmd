@@ -6,6 +6,7 @@ config:
 graph TD;
 	__start__([<p>__start__</p>]):::first
 	load_context(load_context)
+	search_web(search_web)
 	shortlist(shortlist)
 	rank_by_cuisine(rank_by_cuisine)
 	allocate(allocate)
@@ -16,8 +17,9 @@ graph TD;
 	allocate -. &nbsp;empty&nbsp; .-> __end__;
 	allocate -.-> ask_clarifications;
 	allocate -.-> write_recipes;
-	load_context --> shortlist;
+	load_context --> search_web;
 	rank_by_cuisine --> allocate;
+	search_web --> shortlist;
 	shortlist -. &nbsp;empty&nbsp; .-> __end__;
 	shortlist -. &nbsp;rank&nbsp; .-> rank_by_cuisine;
 	ask_clarifications --> __end__;
