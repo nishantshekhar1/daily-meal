@@ -18,6 +18,7 @@ from sqlmodel import Session, select
 
 from app.core.config import get_settings
 from app.models import CanonicalIngredient, PlanningSession, StockLot
+from app.services import search_budget
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,15 @@ async def search_recipes_web(query: str, *, limit: int = 5) -> list[dict[str, An
     """
     settings = get_settings()
     if not settings.web_search_enabled:
+        return []
+
+    # Checked before dispatch so every provider is covered, and before the
+    # request so a spent budget costs nothing.
+    if not search_budget.try_consume():
+        used, limit = search_budget.usage()
+        logger.warning(
+            "Web search budget spent (%d/%d today); planning without search", used, limit
+        )
         return []
 
     provider = settings.web_search_provider

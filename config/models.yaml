@@ -74,11 +74,22 @@ features:
   web_search_timeout_s: 8
   web_search_max_results: 5
 
+  # Hard cap on searches per day, counted across every caller and persisted
+  # across restarts. Tavily bills per search and trial keys are small, so this
+  # is the backstop that keeps a background loop from draining the allowance.
+  # Normal use is ~3-6/day (one per meal slot, plus one after each cook).
+  # Set to 0 to stop all searching without touching web_search.
+  web_search_daily_limit: 20
+
   # Generate the current slot's suggestions in the background so opening the
   # app shows a plan immediately instead of waiting on the model.
   prewarm_suggestions: true
   # How often the background worker re-checks that the cache is warm.
   prewarm_interval_s: 300
+  # After a slot fails to produce a usable plan, leave it alone this long.
+  # Empty plans are not cached, so without this the worker retries every
+  # interval forever — each retry costing GPU time and a web search.
+  prewarm_failure_cooldown_s: 3600
 
 # ── Application ─────────────────────────────────────────────────────────────
 app:

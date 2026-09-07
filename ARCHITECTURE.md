@@ -271,6 +271,7 @@ Controlled entirely by `features` in `config/models.yaml`:
 | `searxng_url` | Instance URL; needs JSON output enabled |
 | `web_search_max_results` | Results fed to the prompt |
 | `web_search_timeout_s` | Per-request budget |
+| `web_search_daily_limit` | Hard cap on searches per day (0 = never search) |
 
 The Tavily key is a secret, so it comes from `TAVILY_API_KEY` in the
 environment rather than the committed YAML. `web_search_ready` is the flag the
@@ -297,6 +298,38 @@ is treated as off instead of failing at request time.
 - **Tests:** `backend/tests/test_web_search.py` covers the flag, provider
   dispatch, bearer auth, snippet truncation and the failure fallback with a
   stubbed HTTP layer (no network, no key).
+
+### Spending controls
+
+Tavily bills per search and trial keys are small, so an unattended background
+loop is a financial risk, not just a performance one. Two mechanisms bound it.
+
+**Daily cap** (`services/search_budget.py`). Every search claims one unit via
+`try_consume()` before any HTTP request; when the day's allowance is gone the
+search is skipped and planning proceeds without it. The counter lives in a JSON
+file under `data_dir`, *not* in memory — a restart or dev reload must not hand
+out a fresh quota, since restarts are exactly when a runaway loop resets itself.
+`GET /meals/suggest/status` reports `used_today` / `daily_limit`.
+
+**Failure cooldown** (`prewarm._failures`). Empty plans are deliberately not
+cached, which created a leak: an unplannable slot — a pantry too bare for the
+model to find `max_suggestions` feasible dishes — was retried every
+`prewarm_interval_s` indefinitely, spending a search and minutes of GPU on each
+attempt. At the 300s default that is up to 288 searches/day. After a failed run
+the slot is now left alone for `prewarm_failure_cooldown_s` (1 hour).
+
+Expected steady-state usage is roughly **3–6 searches/day**: one per meal slot
+as the clock crosses into it, plus one after each cook invalidates the pantry
+fingerprint. The cap defaults to 20 to leave headroom without being a real
+budget.
+
+- **Trade-off — the cap is a backstop, not a scheduler.** It cannot tell a
+  useful search from a wasteful one; it just stops the bleeding. The cooldown
+  is what actually removes the waste.
+- **Trade-off — file over table.** The counter could live in SQLite next to
+  `suggestion_cache`, but a JSON file needs no migration and is trivially
+  inspectable (`cat backend/data/search_budget.json`). It assumes one process,
+  which already holds for this app.
 
 ## Local run
 

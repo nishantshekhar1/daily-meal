@@ -35,6 +35,23 @@ logger = logging.getLogger(__name__)
 # queueing a second identical run behind it.
 _generation_lock = asyncio.Lock()
 
+# Slots whose last run produced nothing usable, and when that happened.
+# Without this, an unplannable slot (e.g. a pantry too bare for the model to
+# find three feasible dishes) is retried every interval forever, burning GPU
+# time and a paid web search on each attempt.
+_failures: dict[str, datetime] = {}
+
+
+def _in_cooldown(slot: str) -> bool:
+    failed_at = _failures.get(slot)
+    if failed_at is None:
+        return False
+    cooldown = get_settings().prewarm_failure_cooldown_s
+    if (datetime.utcnow() - failed_at).total_seconds() >= cooldown:
+        del _failures[slot]
+        return False
+    return True
+
 
 def current_slot() -> str:
     """Slot for the current *local* hour — the user's clock, not UTC."""
@@ -136,9 +153,16 @@ async def generate(slot: str, *, force: bool = False) -> dict[str, Any]:
             # Only cache a usable plan: errors and clarification prompts depend
             # on the session the user is in, so they must not be replayed.
             if result.get("error") or not result.get("planned_meals"):
-                logger.info("Not caching %s: no usable plan (%.0fs)", slot, elapsed)
+                _failures[slot] = datetime.utcnow()
+                logger.info(
+                    "Not caching %s: no usable plan (%.0fs); backing off %ds",
+                    slot,
+                    elapsed,
+                    get_settings().prewarm_failure_cooldown_s,
+                )
                 return result
 
+            _failures.pop(slot, None)
             write_cache(db, slot, result)
             logger.info(
                 "Cached %d suggestion(s) for %s in %.0fs",
@@ -150,11 +174,14 @@ async def generate(slot: str, *, force: bool = False) -> dict[str, Any]:
 
 
 async def ensure_warm(slot: Optional[str] = None) -> None:
-    """Generate a plan for ``slot`` unless a valid one is already cached."""
+    """Generate a plan for ``slot`` unless one is cached or recently failed."""
     slot = slot or current_slot()
     with Session(engine) as db:
         if read_cache(db, slot) is not None:
             return
+    if _in_cooldown(slot):
+        logger.debug("Skipping prewarm for %s: in failure cooldown", slot)
+        return
     await generate(slot)
 
 

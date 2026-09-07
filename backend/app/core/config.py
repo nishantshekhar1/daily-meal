@@ -96,6 +96,11 @@ class Settings(BaseSettings):
         return max(1, int(self.features.get("web_search_max_results", 5)))
 
     @property
+    def web_search_daily_limit(self) -> int:
+        """Hard cap on searches per day. 0 disables search entirely."""
+        return max(0, int(self.features.get("web_search_daily_limit", 20)))
+
+    @property
     def web_search_ready(self) -> bool:
         """Enabled *and* actually usable — Tavily needs a key to work."""
         if not self.web_search_enabled:
@@ -129,6 +134,11 @@ class Settings(BaseSettings):
     @property
     def prewarm_interval_s(self) -> int:
         return max(30, int(self.features.get("prewarm_interval_s", 300)))
+
+    @property
+    def prewarm_failure_cooldown_s(self) -> int:
+        """How long to leave a slot alone after it failed to produce a plan."""
+        return max(0, int(self.features.get("prewarm_failure_cooldown_s", 3600)))
 
     @property
     def app_cfg(self) -> dict[str, Any]:

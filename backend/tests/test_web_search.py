@@ -74,14 +74,22 @@ def http(monkeypatch):
 
 
 @pytest.fixture
-def settings(monkeypatch):
-    """Settings with feature flags that reset after each test."""
+def settings(tmp_path, monkeypatch):
+    """Settings with feature flags that reset after each test.
+
+    ``data_dir`` is redirected because searching consumes the daily budget,
+    which is a file under it — tests must never spend the real allowance.
+    """
     s = get_settings()
     original = dict(s._models_cfg.get("features", {}))
     original_key = s.tavily_api_key
+    original_dir = s.data_dir
+    s.data_dir = tmp_path
+    s._models_cfg.setdefault("features", {})["web_search_daily_limit"] = 1000
     yield s
     s._models_cfg["features"] = original
     s.tavily_api_key = original_key
+    s.data_dir = original_dir
 
 
 def configure(settings, **overrides):

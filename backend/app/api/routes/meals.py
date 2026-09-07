@@ -18,8 +18,9 @@ from app.schemas.meal import (
     CookMealRequest,
     SuggestRequest,
 )
+from app.core.config import get_settings
 from app.services import cook as cook_svc
-from app.services import prewarm
+from app.services import prewarm, search_budget
 from app.services.llm_client import get_llm_client
 
 logger = logging.getLogger(__name__)
@@ -130,11 +131,17 @@ def suggest_status(db: DB, slot: Optional[str] = None):
     """Whether a prewarmed plan is ready, so the UI can set expectations."""
     resolved = slot or prewarm.current_slot()
     cached = prewarm.read_cache(db, resolved)
+    used, limit = search_budget.usage()
     return {
         "slot": resolved,
         "ready": cached is not None,
         "count": len(cached.get("planned_meals", [])) if cached else 0,
         "generated_at": cached.get("generated_at") if cached else None,
+        "web_search": {
+            "enabled": get_settings().web_search_ready,
+            "used_today": used,
+            "daily_limit": limit,
+        },
     }
 
 
