@@ -1,11 +1,14 @@
 # LLM role → endpoint configuration (Ollama OpenAI-compatible API)
-# Copy to config/models.yaml if needed. Default targets local Ollama.
+# Default: local Ollama on this machine. Override ollama_host for a remote GPU box.
+#
+# Running on a single smaller GPU? See config/profiles/ for ready-made
+# configurations at 24 / 16 / 12 / 8 GB, selectable via CONFIG_PATH.
 
 ollama_host: "127.0.0.1"
 
 roles:
   # ── Reasoning ─────────────────────────────────────────────────────────────
-  # Meal planning agent (tool calling).
+  # Meal planning agent (tool calling). qwen3.6:35b is already on this box.
   reasoning:
     base_url: "http://{ollama_host}:11434/v1"
     model: "qwen3.6:35b"
@@ -52,6 +55,9 @@ preferences:
   max_suggestions: 3
 
 # ── Feature flags ───────────────────────────────────────────────────────────
+# Read by Settings.features in backend/app/core/config.py. These must live at
+# the top level, not under `preferences`, or they silently fall back to
+# hardcoded defaults.
 features:
   # ── Web search ─────────────────────────────────────────────────────────────
   # Enrich the shortlist with recipe ideas from the web. Off by default: this
