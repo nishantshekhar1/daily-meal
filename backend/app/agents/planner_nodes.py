@@ -34,7 +34,6 @@ from app.services.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
 
-MAX_SHORTLIST_DISHES = 10
 
 _SHORTLIST_SCHEMA = {
     "type": "object",
@@ -193,7 +192,7 @@ def pantry_context(db: Session) -> str:
 async def load_context(state: PlannerState, config: RunnableConfig) -> dict[str, Any]:
     db, _llm = _cfg(config)
     _status("context", "Reading your pantry and household…")
-    slot_name = state.get("slot") or infer_slot(datetime.utcnow().hour).value
+    slot_name = state.get("slot") or infer_slot(datetime.now().hour).value
     session_id = state.get("session_id") or str(uuid.uuid4())
 
     ps = db.get(PlanningSession, session_id)
@@ -433,7 +432,9 @@ async def write_recipes(state: PlannerState, config: RunnableConfig) -> dict[str
     db.commit()
     plan_id = plan.id
 
-    queue = (state.get("feasible_dishes") or [])[:MAX_SHORTLIST_DISHES]
+    # Cap the plan: every extra dish is another full LLM generation. The
+    # shortlist is already cuisine-ranked, so this keeps the best N.
+    queue = (state.get("feasible_dishes") or [])[: get_settings().max_suggestions]
     for index, dish_data in enumerate(queue, start=1):
         audience = MealAudience(dish_data.get("audience", "main"))
 

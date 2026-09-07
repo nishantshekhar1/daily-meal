@@ -1,9 +1,10 @@
 """FastAPI application entrypoint."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import household, meals, pantry, receipts
 from app.core.config import get_settings
 from app.db.session import create_db_and_tables
+from app.services import prewarm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,7 +28,19 @@ async def lifespan(app: FastAPI):
     # In dev: create tables if Alembic hasn't been run yet
     create_db_and_tables()
     logger.info("Daily Meal Planner API started. DB: %s", settings.db_url)
+
+    stop = asyncio.Event()
+    worker: asyncio.Task | None = None
+    if settings.prewarm_suggestions:
+        worker = asyncio.create_task(prewarm.prewarm_loop(stop))
+
     yield
+
+    if worker is not None:
+        stop.set()
+        worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await worker
     logger.info("Shutting down.")
 
 

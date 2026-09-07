@@ -47,11 +47,21 @@ preferences:
     - mexican
     - italian
 
+  # How many recipes a plan contains. Each one costs a full LLM generation,
+  # so this is the single biggest lever on planning time.
+  max_suggestions: 3
+
 # ── Feature flags ───────────────────────────────────────────────────────────
 features:
   web_search: false
   searxng_url: "http://localhost:8080"
   web_search_timeout_s: 8
+
+  # Generate the current slot's suggestions in the background so opening the
+  # app shows a plan immediately instead of waiting on the model.
+  prewarm_suggestions: true
+  # How often the background worker re-checks that the cache is warm.
+  prewarm_interval_s: 300
 
 # ── Application ─────────────────────────────────────────────────────────────
 app:

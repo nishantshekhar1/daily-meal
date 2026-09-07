@@ -1,7 +1,7 @@
 # Daily Meal Planner — Architecture
 
 > **Live document.** Updated alongside every significant code change.
-> Last updated: 2026-09-07 (streaming suggest endpoint; LangGraph planner + Mermaid export)
+> Last updated: 2026-09-07 (prewarmed suggestions; streaming suggest endpoint; LangGraph planner)
 
 ---
 
@@ -73,6 +73,7 @@ All roles are swappable via `config/models.yaml` — the app speaks plain OpenAI
 | `services/receipt_parser.py` | `parse_receipt()` | OCR → classify → canonicalize → ReceiptLine rows |
 | `services/pantry.py` | `get_pantry_summary()`, `add_stock_*()` | Pantry CRUD; lot-aware quantity aggregation |
 | `services/cook.py` | `cook_meal()`, `confirm_exhaustion()` | FIFO deduction, exhaustion candidates, user confirmation |
+| `services/prewarm.py` | `prewarm_loop()`, `generate()`, `fingerprint()` | Background pre-generation + cache for the current slot |
 | `agents/planner_graph.py` | `get_planner_graph()`, `planner_mermaid[_png]()` | Compiled LangGraph + Mermaid/PNG export |
 | `agents/planner_nodes.py` | `load_context`, `shortlist_dishes`, `allocate_inventory`, … | Graph node implementations |
 | `agents/planner.py` | `MealPlannerAgent.suggest()`, `.astream_suggest()` | Facade: `ainvoke` / `astream` the planner graph with db/llm config |
@@ -105,6 +106,7 @@ CanonicalIngredient ──< IngredientAlias
 HouseholdMember   (standalone; loaded into planner context)
 PlanningSession   (per suggest() call; holds clarification budget)
 MealPlan ──< PlannedMeal
+SuggestionCache   (one row per slot; prewarmed plan + input fingerprint)
 ```
 
 ---
@@ -211,6 +213,47 @@ Event types, one JSON object per SSE frame:
   session would already be closed.
 - **Client:** `apiStream()` in `frontend/src/lib/utils.ts` parses SSE by hand
   (`EventSource` is GET-only and planning needs a POST body).
+
+### Prewarmed suggestions
+
+Streaming improved *perceived* latency but the wait was still real. The plan for
+the current slot is therefore generated **before** the user asks:
+
+- `preferences.max_suggestions` (default 3) caps the plan. Each dish is a full
+  generation, so this is the single biggest lever on planning time — it was
+  previously fixed at 10.
+- A background worker (`prewarm_loop`, started in the app lifespan) keeps the
+  current slot warm, re-checking every `features.prewarm_interval_s`. The
+  interval catches both the clock crossing into a new slot and a pantry change.
+- The slot comes from the **local** hour, matching how the client picks its
+  default. This was previously `datetime.utcnow().hour`, which chose the wrong
+  meal on any machine not on UTC.
+- `POST /meals/suggest` returns the cached plan when valid; measured at ~5 ms
+  against ~172 s for a live generation. `GET /meals/suggest/status` reports
+  readiness so the UI can say whether pressing Suggest is instant.
+- `POST /meals/suggest/stream` replays a cached plan as `meal` events followed
+  by `done`, so the client has one code path either way.
+
+**Freshness is a fingerprint, not a TTL.** `fingerprint()` hashes pantry stock,
+active members, cuisine priority and plan size. Cooking a meal changes stock and
+invalidates the cache immediately; an untouched pantry keeps it valid
+indefinitely. A time-based TTL would do both jobs badly — expiring plans that
+are still perfectly good while serving plans for food already eaten.
+
+- **Trade-off — durable cache.** `SuggestionCache` is a table, not an in-memory
+  dict (migration `0003`). A plan costs minutes of GPU time, so a restart or dev
+  reload must not discard it. Cost: a migration and a row that duplicates data
+  already in `MealPlan`.
+- **Trade-off — single-flight.** One `asyncio.Lock` serializes generation, so a
+  user request arriving mid-prewarm waits for it and then reads the cache rather
+  than queueing a second identical run. The local model serves requests serially
+  anyway. Empty plans are *not* cached (a clarification prompt is
+  session-specific), so that path does re-run per caller.
+- **Trade-off — speculative work.** The worker generates plans nobody may ask
+  for, spending idle GPU time and writing `MealPlan` rows that go unused. That
+  is the trade being made: idle GPU time is free, user waiting time is not.
+- **Escape hatch:** `force: true` on either suggest endpoint bypasses the cache
+  ("Suggest something else" in the UI) and takes the full generation time.
 
 ## Local run
 

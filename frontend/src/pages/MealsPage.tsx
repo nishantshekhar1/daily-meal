@@ -1,13 +1,29 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChefHat, Clock, Users, AlertCircle, CheckCircle2, Loader2, Baby } from "lucide-react";
+import {
+  ChefHat,
+  Clock,
+  Users,
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  Baby,
+  Zap,
+  RefreshCw,
+} from "lucide-react";
 import { TopBar } from "@/components/layout/TopBar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { apiFetch, apiStream } from "@/lib/utils";
-import type { SuggestResult, SuggestEvent, PlannedMeal, CookResult } from "@/types";
+import type {
+  SuggestResult,
+  SuggestEvent,
+  SuggestStatus,
+  PlannedMeal,
+  CookResult,
+} from "@/types";
 
 const SLOT_LABELS: Record<string, string> = {
   breakfast: "Breakfast",
@@ -34,17 +50,19 @@ export default function MealsPage() {
   const [progress, setProgress] = useState<string | null>(null);
   const [streamedMeals, setStreamedMeals] = useState<PlannedMeal[]>([]);
 
-  // Planning makes one LLM call per dish, so the full run takes minutes. The
-  // stream lets each recipe render as it lands instead of after the last one.
+  // A plan for the current slot is usually prewarmed, in which case the stream
+  // replays it immediately. Otherwise it is generated live, one LLM call per
+  // dish, and the stream lets each recipe render as it lands.
   const suggest = useMutation({
-    mutationFn: async (slot?: string) => {
+    mutationFn: async (opts?: { slot?: string; force?: boolean }) => {
       setProgress("Starting…");
       setStreamedMeals([]);
 
       let final: SuggestResult | null = null;
       for await (const event of apiStream<SuggestEvent>("/meals/suggest/stream", {
-        slot: slot ?? selectedSlot,
+        slot: opts?.slot ?? selectedSlot,
         session_id: sessionId,
+        force: opts?.force ?? false,
       })) {
         if (event.type === "status") setProgress(event.message);
         else if (event.type === "meal") setStreamedMeals((prev) => [...prev, event.meal]);
@@ -57,8 +75,17 @@ export default function MealsPage() {
     onSuccess: (data) => {
       setResult(data);
       if (data.session_id) setSessionId(data.session_id);
+      qc.invalidateQueries({ queryKey: ["suggest-status"] });
     },
     onSettled: () => setProgress(null),
+  });
+
+  // Tells the user whether pressing Suggest is instant or a few minutes' wait.
+  const status = useQuery({
+    queryKey: ["suggest-status", selectedSlot],
+    queryFn: () =>
+      apiFetch<SuggestStatus>(`/meals/suggest/status?slot=${selectedSlot}`),
+    refetchInterval: 60_000,
   });
 
   const answerQuestion = useMutation({
@@ -111,11 +138,13 @@ export default function MealsPage() {
 
   const timeSlot = slotFromHour();
 
-  const runSuggest = () => {
+  const runSuggest = (force = false) => {
     setResult(null);
     setSessionId(null);
-    suggest.mutate(selectedSlot);
+    suggest.mutate({ slot: selectedSlot, force });
   };
+
+  const ready = status.data?.ready ?? false;
 
   // Picking a slot only changes the selection — results for another meal no
   // longer apply, so clear them and let the user press Suggest again.
@@ -227,17 +256,24 @@ export default function MealsPage() {
               <ChefHat className="h-12 w-12 mx-auto text-muted-foreground mb-3" />
               <p className="font-medium">Ready to suggest a meal</p>
               <p className="text-sm text-muted-foreground mt-1">
-                The AI will check your pantry and plan {SLOT_LABELS[selectedSlot].toLowerCase()}
+                {ready
+                  ? `${status.data?.count} ${SLOT_LABELS[selectedSlot].toLowerCase()} ideas are ready to go`
+                  : `The AI will check your pantry and plan ${SLOT_LABELS[selectedSlot].toLowerCase()}`}
               </p>
               <Button
                 size="lg"
                 className="w-full mt-5"
-                onClick={runSuggest}
+                onClick={() => runSuggest()}
                 disabled={suggest.isPending}
               >
-                <ChefHat className="h-5 w-5" />
+                {ready ? <Zap className="h-5 w-5" /> : <ChefHat className="h-5 w-5" />}
                 Suggest {SLOT_LABELS[selectedSlot]}
               </Button>
+              {!ready && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Nothing prepared yet — this one takes a few minutes
+                </p>
+              )}
             </CardContent>
           </Card>
         )}
@@ -342,6 +378,18 @@ export default function MealsPage() {
             </CardContent>
           </Card>
         ))}
+
+        {/* Regenerate: bypasses the prewarmed plan, so this one waits on the model */}
+        {meals.length > 0 && !suggest.isPending && (
+          <Button
+            variant="outline"
+            className="w-full h-11"
+            onClick={() => runSuggest(true)}
+          >
+            <RefreshCw className="h-4 w-4" />
+            Suggest something else
+          </Button>
+        )}
       </div>
 
       {/* Exhaustion confirmation dialog */}

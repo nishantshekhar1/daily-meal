@@ -52,7 +52,9 @@ class MealPlannerAgent:
                 ).all()
             )
 
-        resolved_slot = slot or infer_slot(datetime.utcnow().hour)
+        # Local hour, not UTC: "what meal is it" is a wall-clock question and
+        # the client infers its default slot the same way.
+        resolved_slot = slot or infer_slot(datetime.now().hour)
         initial: dict[str, Any] = {
             "slot": resolved_slot.value,
             "session_id": planning_session_id or "",

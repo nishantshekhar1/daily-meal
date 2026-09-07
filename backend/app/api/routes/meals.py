@@ -19,6 +19,7 @@ from app.schemas.meal import (
     SuggestRequest,
 )
 from app.services import cook as cook_svc
+from app.services import prewarm
 from app.services.llm_client import get_llm_client
 
 logger = logging.getLogger(__name__)
@@ -31,16 +32,37 @@ def _active_members(db: Session) -> list[HouseholdMember]:
     return list(db.exec(select(HouseholdMember).where(HouseholdMember.active == True)).all())
 
 
+def _cacheable(req: SuggestRequest) -> bool:
+    """Only a plain 'what's for lunch' request may be served from the cache.
+
+    Resuming a session replays user answers, and ``force`` is the user asking
+    for something other than what they were already shown.
+    """
+    return req.session_id is None and not req.force
+
+
 @router.post("/suggest")
 async def suggest(req: SuggestRequest, db: DB):
     """Ask the agent for a meal suggestion.
 
-    slot is inferred from current time if not provided.
+    Returns the prewarmed plan for the slot when one is valid, which is the
+    normal case and answers immediately.  Otherwise generates on demand, which
+    takes minutes on a local model — prefer ``/suggest/stream`` for that path.
+
+    slot is inferred from the current local time if not provided.
     session_id can be provided to resume a session (after answering questions).
     """
+    slot = req.slot or prewarm.current_slot()
+
+    if _cacheable(req):
+        cached = prewarm.read_cache(db, slot)
+        if cached is not None:
+            return cached
+        return await prewarm.generate(slot, force=False)
+
     agent = MealPlannerAgent(db, get_llm_client())
     return await agent.suggest(
-        slot=MealSlot(req.slot) if req.slot else None,
+        slot=MealSlot(slot),
         members=_active_members(db),
         planning_session_id=req.session_id,
     )
@@ -55,8 +77,9 @@ async def suggest_stream(req: SuggestRequest):
     finished recipe, then a terminal ``done`` event with the same payload the
     blocking endpoint returns.
     """
-    slot = MealSlot(req.slot) if req.slot else None
+    slot = req.slot or prewarm.current_slot()
     session_id = req.session_id
+    use_cache = _cacheable(req)
 
     def sse(payload: dict) -> str:
         return f"data: {json.dumps(payload, default=str)}\n\n"
@@ -66,13 +89,26 @@ async def suggest_stream(req: SuggestRequest):
         # yield-dependencies before a streaming body finishes, so the
         # request-scoped session would already be closed in here.
         with Session(engine) as db:
+            if use_cache:
+                cached = prewarm.read_cache(db, slot)
+                if cached is not None:
+                    # Nothing to stream — replay the plan and finish.
+                    for meal in cached.get("planned_meals", []):
+                        yield sse({"type": "meal", "meal": meal})
+                    yield sse({"type": "done", "result": cached})
+                    return
+
             agent = MealPlannerAgent(db, get_llm_client())
             try:
                 async for event in agent.astream_suggest(
-                    slot=slot,
+                    slot=MealSlot(slot),
                     members=_active_members(db),
                     planning_session_id=session_id,
                 ):
+                    if event.get("type") == "done":
+                        result = event["result"]
+                        if use_cache and result.get("planned_meals"):
+                            prewarm.write_cache(db, slot, result)
                     yield sse(event)
             except Exception as e:  # surface as a stream event; headers are long sent
                 logger.exception("suggest stream failed")
@@ -87,6 +123,19 @@ async def suggest_stream(req: SuggestRequest):
             "X-Accel-Buffering": "no",  # don't let a proxy buffer the stream
         },
     )
+
+
+@router.get("/suggest/status")
+def suggest_status(db: DB, slot: Optional[str] = None):
+    """Whether a prewarmed plan is ready, so the UI can set expectations."""
+    resolved = slot or prewarm.current_slot()
+    cached = prewarm.read_cache(db, resolved)
+    return {
+        "slot": resolved,
+        "ready": cached is not None,
+        "count": len(cached.get("planned_meals", [])) if cached else 0,
+        "generated_at": cached.get("generated_at") if cached else None,
+    }
 
 
 @router.post("/answer-question")

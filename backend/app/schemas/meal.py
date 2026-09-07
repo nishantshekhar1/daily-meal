@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class SuggestRequest(BaseModel):
     slot: Optional[str] = None          # breakfast | lunch | dinner | snack
     session_id: Optional[str] = None    # resume an existing session
+    force: bool = False                 # ignore the prewarmed plan, generate fresh
 
 
 class AnswerQuestionRequest(BaseModel):

@@ -88,6 +88,19 @@ class Settings(BaseSettings):
         return [str(c).strip().lower() for c in raw if str(c).strip()]
 
     @property
+    def max_suggestions(self) -> int:
+        """How many recipes one plan contains (one LLM generation each)."""
+        return max(1, int(self.preferences.get("max_suggestions", 3)))
+
+    @property
+    def prewarm_suggestions(self) -> bool:
+        return bool(self.features.get("prewarm_suggestions", True))
+
+    @property
+    def prewarm_interval_s(self) -> int:
+        return max(30, int(self.features.get("prewarm_interval_s", 300)))
+
+    @property
     def app_cfg(self) -> dict[str, Any]:
         return self._models_cfg.get("app", {})
 

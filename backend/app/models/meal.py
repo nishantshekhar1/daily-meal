@@ -66,6 +66,25 @@ class MealPlan(SQLModel, table=True):
     planned_meals: list["PlannedMeal"] = Relationship(back_populates="plan")
 
 
+class SuggestionCache(SQLModel, table=True):
+    """A pre-generated plan for one meal slot, ready to serve instantly.
+
+    Persisted rather than kept in memory only: a plan costs several minutes of
+    local GPU time, so a process restart (including a dev reload) must not
+    throw it away.  ``fingerprint`` covers the inputs that would change the
+    outcome — pantry stock, active members, cuisine priority, plan size — so a
+    stale entry is detected instead of served.
+    """
+
+    __tablename__ = "suggestion_cache"
+
+    slot: str = Field(primary_key=True)
+    fingerprint: str = Field(index=True)
+    result_json: str = Field(description="Serialized SuggestResult payload.")
+    plan_id: Optional[int] = Field(default=None, foreign_key="meal_plan.id")
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class PlannedMeal(SQLModel, table=True):
     """One meal slot within a plan."""
 

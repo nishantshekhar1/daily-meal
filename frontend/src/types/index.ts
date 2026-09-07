@@ -71,9 +71,20 @@ export interface PlannedMeal {
   };
 }
 
+/** Whether a prewarmed plan is sitting ready for a slot. */
+export interface SuggestStatus {
+  slot: string;
+  ready: boolean;
+  count: number;
+  generated_at: string | null;
+}
+
 export interface SuggestResult {
   session_id: string;
   plan_id?: number;
+  /** True when served from the prewarm cache rather than generated on demand. */
+  cached?: boolean;
+  generated_at?: string;
   planned_meals: PlannedMeal[];
   pending_questions: Array<{ ingredient: string; question: string; answer: boolean | null }>;
   safety_reports?: Array<{ dish: string; safe: boolean; violations: Array<{ ingredient: string; rule: string; severity: string }> }>;
