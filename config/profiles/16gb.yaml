@@ -1,17 +1,26 @@
-# LLM role → endpoint configuration (Ollama OpenAI-compatible API)
-# Default: local Ollama on this machine. Override ollama_host for a remote GPU box.
+# ── Profile: 16 GB single GPU (RTX 4060 Ti 16GB / 4070 Ti Super / 5060 Ti) ──
+# Select with:  CONFIG_PATH=../config/profiles/16gb.yaml
 #
-# Running on a single smaller GPU? See config/profiles/ for ready-made
-# configurations at 24 / 16 / 12 / 8 GB, selectable via CONFIG_PATH.
+# VRAM budget (Q4_K_M):
+#   reasoning  qwen3:14b         ~ 9.0 GB
+#   vision/ocr qwen3-vl:4b       ~ 3.5 GB
+#   embedding  nomic-embed-text  ~ 0.3 GB
+#   total                        ~12.8 GB  → all three stay resident
+#
+# Nothing ever swaps at this tier, so receipt scanning and meal planning are
+# both consistently fast.
+#
+# Quality note: qwen3:14b is dense, so it is slower per token than the 30B-A3B
+# MoE on the 24 GB profile despite being smaller. Shortlisting stays reliable;
+# recipe prose is a little less varied than the larger profiles.
 
 ollama_host: "127.0.0.1"
 
 roles:
   # ── Reasoning ─────────────────────────────────────────────────────────────
-  # Meal planning agent (tool calling). qwen3.6:35b is already on this box.
   reasoning:
     base_url: "http://{ollama_host}:11434/v1"
-    model: "qwen3.6:35b"
+    model: "qwen3:14b"
     api_key: "ollama"
     max_tokens: 4096
     temperature: 0.4
@@ -19,16 +28,15 @@ roles:
   # ── Vision (ingredient photos) ────────────────────────────────────────────
   vision:
     base_url: "http://{ollama_host}:11434/v1"
-    model: "qwen3-vl:8b"
+    model: "qwen3-vl:4b"
     api_key: "ollama"
     max_tokens: 1024
     temperature: 0.1
 
   # ── OCR (receipts) ────────────────────────────────────────────────────────
-  # No PaddleOCR in Ollama — reuse the vision VL model with an OCR prompt.
   ocr:
     base_url: "http://{ollama_host}:11434/v1"
-    model: "qwen3-vl:8b"
+    model: "qwen3-vl:4b"
     api_key: "ollama"
     max_tokens: 2048
     temperature: 0.0
@@ -42,60 +50,28 @@ roles:
 
 # ── Household preferences ───────────────────────────────────────────────────
 preferences:
-  # Cuisines in descending preference order. The planner asks the model to
-  # tag each shortlisted dish with a cuisine, then re-ranks deterministically
-  # by this order. Anything not listed ranks last.
   cuisine_priority:
     - indian
     - mexican
     - italian
 
-  # How many recipes a plan contains. Each one costs a full LLM generation,
-  # so this is the single biggest lever on planning time.
   max_suggestions: 3
 
 # ── Feature flags ───────────────────────────────────────────────────────────
-# Read by Settings.features in backend/app/core/config.py. These must live at
-# the top level, not under `preferences`, or they silently fall back to
-# hardcoded defaults.
+# Must live at the top level, not under `preferences` — Settings.features reads
+# them from here, and keys placed elsewhere silently fall back to defaults.
 features:
   # ── Web search ─────────────────────────────────────────────────────────────
-  # Enrich the shortlist with recipe ideas from the web. Off by default: this
-  # is the one feature that sends data off the machine, so enabling it trades
-  # the app's local-only property for better variety.
-  #
-  # When on, the planner runs a `search_web` step before shortlisting. Results
-  # are inspiration only — dishes are still constrained to pantry stock. Any
-  # failure (no key, unreachable, slow) falls back to the model's own knowledge
-  # rather than failing the request.
   web_search: false
-
-  # "tavily"  → hosted API, needs TAVILY_API_KEY in backend/.env
-  # "searxng" → self-hosted instance, keeps everything on your network
-  #             (requires JSON output enabled: `formats: [html, json]`)
   web_search_provider: "tavily"
-
-  tavily_search_depth: "basic"     # basic | advanced (advanced costs more credits)
+  tavily_search_depth: "basic"
   searxng_url: "http://localhost:8080"
   web_search_timeout_s: 8
   web_search_max_results: 5
 
-  # Hard cap on searches per day, counted across every caller and persisted
-  # across restarts. Tavily bills per search and trial keys are small, so this
-  # is the backstop that keeps a background loop from draining the allowance.
-  # Normal use is ~3-6/day (one per meal slot, plus one after each cook).
-  # Set to 0 to stop all searching without touching web_search.
-  web_search_daily_limit: 20
-
-  # Generate the current slot's suggestions in the background so opening the
-  # app shows a plan immediately instead of waiting on the model.
+  # Everything is resident, so the background refresh costs nothing but compute.
   prewarm_suggestions: true
-  # How often the background worker re-checks that the cache is warm.
   prewarm_interval_s: 300
-  # After a slot fails to produce a usable plan, leave it alone this long.
-  # Empty plans are not cached, so without this the worker retries every
-  # interval forever — each retry costing GPU time and a web search.
-  prewarm_failure_cooldown_s: 3600
 
   # ── Learning from feedback ─────────────────────────────────────────────────
   # Use thumbs, cooked meals and skipped suggestions to re-rank future

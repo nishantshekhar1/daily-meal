@@ -1,5 +1,8 @@
 # LLM role → endpoint configuration (Ollama OpenAI-compatible API)
 # Default: local Ollama on this machine. Override ollama_host for a remote GPU box.
+#
+# Running on a single smaller GPU? See config/profiles/ for ready-made
+# configurations at 24 / 16 / 12 / 8 GB, selectable via CONFIG_PATH.
 
 ollama_host: "127.0.0.1"
 
@@ -52,6 +55,9 @@ preferences:
   max_suggestions: 3
 
 # ── Feature flags ───────────────────────────────────────────────────────────
+# Read by Settings.features in backend/app/core/config.py. These must live at
+# the top level, not under `preferences`, or they silently fall back to
+# hardcoded defaults.
 features:
   # ── Web search ─────────────────────────────────────────────────────────────
   # Enrich the shortlist with recipe ideas from the web. Off by default: this
@@ -90,6 +96,23 @@ features:
   # Empty plans are not cached, so without this the worker retries every
   # interval forever — each retry costing GPU time and a web search.
   prewarm_failure_cooldown_s: 3600
+
+  # ── Learning from feedback ─────────────────────────────────────────────────
+  # Use thumbs, cooked meals and skipped suggestions to re-rank future
+  # suggestions and to hint the shortlist prompt.
+  #
+  # Turning this off still records and measures feedback, it just stops it
+  # acting on suggestions — that is the baseline to compare against when you
+  # want to know whether the loop is actually helping.
+  learn_from_feedback: true
+
+  # How often the background worker sweeps skipped suggestions, re-aggregates
+  # preference profiles and snapshots quality metrics. Hours, not minutes: none
+  # of the inputs move faster, and this competes with the model for the GPU.
+  feedback_maintenance_interval_s: 21600
+
+  # Trailing window for cook-through rate and the other quality metrics.
+  metrics_window_days: 30
 
 # ── Application ─────────────────────────────────────────────────────────────
 app:

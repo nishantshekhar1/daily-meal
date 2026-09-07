@@ -26,6 +26,7 @@ from app.agents.planner_nodes import infer_slot
 from app.core.config import get_settings
 from app.db.session import engine
 from app.models import HouseholdMember, MealSlot, StockLot, SuggestionCache
+from app.services import preference
 from app.services.llm_client import get_llm_client
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,11 @@ def fingerprint(db: Session) -> str:
             # Toggling web search (or switching provider) changes what gets
             # shortlisted, so a plan generated under the old setting is stale.
             "web": settings.web_search_ready and settings.web_search_provider,
+            # Learned preference feeds both ranking and the shortlist prompt.
+            # Without it here, a plan cached before the household rated
+            # anything would keep being served until the pantry happened to
+            # change — the feedback would be recorded and never take effect.
+            "preferences": preference.profile_version(db),
         },
         sort_keys=True,
     )

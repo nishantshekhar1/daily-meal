@@ -24,9 +24,13 @@ from app.models import (  # noqa: F401
     Dish,
     MealPlan,
     PlannedMeal,
+    SuggestionCache,
     CookEvent,
     CookDeduction,
     PlanningSession,
+    DishFeedback,
+    PreferenceProfile,
+    MetricSnapshot,
 )
 
 config = context.config
