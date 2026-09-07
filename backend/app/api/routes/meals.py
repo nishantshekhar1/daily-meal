@@ -129,3 +129,28 @@ def get_plan(plan_id: int, db: DB):
         raise HTTPException(404, "Plan not found")
     meals = db.exec(select(PlannedMeal).where(PlannedMeal.plan_id == plan_id)).all()
     return {"plan": plan, "meals": meals}
+
+
+@router.get("/graph/mermaid")
+def planner_graph_mermaid():
+    """Return Mermaid source for the LangGraph meal planner."""
+    from app.agents.planner_graph import planner_mermaid
+
+    return {"mermaid": planner_mermaid()}
+
+
+@router.get("/graph/mermaid.png")
+def planner_graph_mermaid_png():
+    """Return a PNG rendering of the planner graph."""
+    from fastapi.responses import Response
+
+    from app.agents.planner_graph import planner_mermaid_png
+
+    try:
+        png = planner_mermaid_png()
+    except Exception as e:
+        raise HTTPException(
+            503,
+            f"Could not render Mermaid PNG ({e}). Use GET /meals/graph/mermaid for the source.",
+        ) from e
+    return Response(content=png, media_type="image/png")

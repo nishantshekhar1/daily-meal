@@ -1,7 +1,7 @@
 # Daily Meal Planner — Architecture
 
 > **Live document.** Updated alongside every significant code change.
-> Last updated: 2026-09-07 (switched model serving to Ollama)
+> Last updated: 2026-09-07 (meal planner on LangGraph + Mermaid export)
 
 ---
 
@@ -73,7 +73,9 @@ All roles are swappable via `config/models.yaml` — the app speaks plain OpenAI
 | `services/receipt_parser.py` | `parse_receipt()` | OCR → classify → canonicalize → ReceiptLine rows |
 | `services/pantry.py` | `get_pantry_summary()`, `add_stock_*()` | Pantry CRUD; lot-aware quantity aggregation |
 | `services/cook.py` | `cook_meal()`, `confirm_exhaustion()` | FIFO deduction, exhaustion candidates, user confirmation |
-| `agents/planner.py` | `MealPlannerAgent.suggest()` | 3-stage planning: shortlist → allocate → write recipes |
+| `agents/planner_graph.py` | `get_planner_graph()`, `planner_mermaid[_png]()` | Compiled LangGraph + Mermaid/PNG export |
+| `agents/planner_nodes.py` | `load_context`, `shortlist_dishes`, `allocate_inventory`, … | Graph node implementations |
+| `agents/planner.py` | `MealPlannerAgent.suggest()` | Facade: `ainvoke` planner graph with db/llm config |
 | `agents/inventory.py` | `InventoryAllocator.allocate()` | Deterministic Python stock reservation (no LLM arithmetic) |
 | `agents/safety.py` | `validate_toddler_dish()` | Hard-coded CDC/NHS toddler safety rules; never delegated to LLM |
 | `agents/tools.py` | `ToolExecutor`, `get_active_tools()` | Tool definitions + code-enforced `ClarificationBudget(max=3)` |
@@ -152,6 +154,18 @@ No receipt line ever auto-commits to the pantry. All lines go through a review s
 - Barcode scanning
 
 ---
+
+
+## Meal planner graph (LangGraph)
+
+```
+START → load_context → shortlist ─┬─→ allocate ─┬─→ write_recipes → END
+                                  │             └─→ ask_clarifications → END
+                                  └─→ END
+```
+
+- **Trade-off:** Graph topology is explicit and exportable (Mermaid); node I/O stays in Python with the existing `LLMClient` (Ollama) rather than LangChain chat models — fewer moving parts, same local inference path.
+- **Export:** `GET /api/v1/meals/graph/mermaid`, `GET /api/v1/meals/graph/mermaid.png`, or `python scripts/export_planner_graph.py` → `docs/planner_graph.{mmd,png}`.
 
 ## Local run
 

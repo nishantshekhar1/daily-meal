@@ -16,8 +16,11 @@ dependencies = [
     "sqlalchemy>=2.0",
     "alembic>=1.13",
     "aiosqlite>=0.20",
-    # LLM client (OpenAI-compatible, points at local vLLM)
+    # LLM client (OpenAI-compatible → Ollama)
     "openai>=1.40",
+    # Agent orchestration
+    "langgraph>=0.2",
+    "langchain-core>=0.3",
     # Unit arithmetic
     "pint>=0.24",
     # Image handling
