@@ -91,6 +91,12 @@ Two non-model knobs move with the tier because they cost VRAM and latency as muc
 | `services/pantry.py` | `get_pantry_summary()`, `add_stock_*()` | Pantry CRUD; lot-aware quantity aggregation |
 | `services/cook.py` | `cook_meal()`, `confirm_exhaustion()` | FIFO deduction, exhaustion candidates, user confirmation |
 | `services/prewarm.py` | `prewarm_loop()`, `generate()`, `fingerprint()` | Background pre-generation + cache for the current slot |
+| `services/feedback.py` | `record()`, `record_cooked()`, `record_reroll()`, `sweep_skipped()` | Append-only capture of explicit and implicit suggestion feedback |
+| `services/preference.py` | `rebuild_profiles()`, `build_ranking_context()`, `preference_hint()` | Beta-smoothed affinity scores at cuisine / ingredient / dish scope |
+| `services/metrics.py` | `compute()`, `snapshot()` | Cook-through, thumbs, reroll and repetition rates over a trailing window |
+| `services/maintenance.py` | `maintenance_loop()`, `run_once()` | Background worker: sweep skipped → re-aggregate → snapshot metrics |
+| `agents/ranking.py` | `rank()`, `RankingWeights` | Pure scoring of shortlisted dishes; no database access |
+| `eval/runner.py` | `run_suite()`, `format_comparison()` | Offline regression harness; compares model profiles on structural checks |
 | `agents/planner_graph.py` | `get_planner_graph()`, `planner_mermaid[_png]()` | Compiled LangGraph + Mermaid/PNG export |
 | `agents/planner_nodes.py` | `load_context`, `shortlist_dishes`, `allocate_inventory`, … | Graph node implementations |
 | `agents/planner.py` | `MealPlannerAgent.suggest()`, `.astream_suggest()` | Facade: `ainvoke` / `astream` the planner graph with db/llm config |
@@ -106,6 +112,7 @@ Two non-model knobs move with the tier because they cost VRAM and latency as muc
 | `pages/MealsPage.tsx` | Suggest button, pending questions, meal cards, cook+deplete flow |
 | `pages/ReceiptsPage.tsx` | Receipt photo upload, line-by-line review, confirm to pantry |
 | `pages/HouseholdPage.tsx` | Member profiles (kind, age, dietary notes) |
+| `components/MealFeedback.tsx` | Thumbs up/down with optional reason chips, posted optimistically |
 | `components/layout/BottomNav.tsx` | Mobile-first bottom navigation |
 | `lib/utils.ts` | `apiFetch()` helper; `API_BASE` constant |
 
@@ -124,6 +131,12 @@ HouseholdMember   (standalone; loaded into planner context)
 PlanningSession   (per suggest() call; holds clarification budget)
 MealPlan ──< PlannedMeal
 SuggestionCache   (one row per slot; prewarmed plan + input fingerprint)
+
+PlannedMeal ──< DishFeedback ──> Dish      (append-only signal log)
+                     │
+                     └── aggregated into ──> PreferenceProfile
+                                             (scope × scope_key × audience)
+MetricSnapshot    (periodic rollup of suggestion quality; not read by ranking)
 ```
 
 ---
@@ -315,6 +328,91 @@ is treated as off instead of failing at request time.
   dispatch, bearer auth, snippet truncation and the failure fallback with a
   stubbed HTTP layer (no network, no key).
 
+---
+
+## Suggestion feedback loop
+
+Suggestion quality was previously fixed at whatever the model produced. This closes the loop in three stages — capture, apply, evaluate — each of which can be turned off independently.
+
+### Capture
+
+Feedback lands in `DishFeedback`, an append-only event log. Nothing is ever aggregated into it, so the scoring function can be retuned later and the whole history recomputed.
+
+Most of the signal costs the user nothing:
+
+| Signal | Source | Weight | Why that weight |
+|---|---|---|---|
+| `thumbs_up` | Explicit tap | +1.0 | Unambiguous |
+| `thumbs_down` | Explicit tap | −1.0 | Unambiguous |
+| `cooked` | `POST /meals/cook`, already recorded | +0.6 | Strong, but they may have cooked it for reasons other than liking it |
+| `skipped` | Swept after 30h uncooked and unrated | −0.25 | Absence of action is weak evidence of dislike |
+| `rerolled` | `force=true` on suggest | −0.15 | Rejects a *set*, says little about any one dish |
+
+Weights live in `SIGNAL_WEIGHTS` (`services/preference.py`), not in the database, precisely so they can be retuned and applied retroactively.
+
+Two invariants hold throughout: a signal is never double-counted (re-rating replaces, implicit signals dedupe by kind), and a weak inferred signal never overwrites something the user said directly (the sweep skips anything with existing feedback; reroll skips explicitly rated meals).
+
+### Apply
+
+`PreferenceProfile` is a materialized aggregate, rebuilt wholesale from the log rather than patched incrementally — a household's entire history aggregates in milliseconds, and this keeps the table a pure function of the event log.
+
+Scores are Beta-smoothed:
+
+```
+score = 2 × (positive + 4 × 0.5) / (positive + negative + 4) − 1     ∈ [−1, 1]
+```
+
+A prior weight of 4 means a scope needs roughly four events before its score moves decisively off neutral. This is what stops one bad dinner from suppressing an entire cuisine, and it makes "no feedback" score exactly 0 so an unrated dish never outranks or undercuts anything.
+
+Preferences are learned at three scopes because a household suggests any given dish once or twice ever — **dish scope alone would never converge**. Cuisine and ingredient scope are where sparse per-dish feedback generalizes. Staples like onion and salt appear in both liked and disliked dishes, so their scores converge toward 0 on their own; no hand-maintained stoplist is needed.
+
+`rank_dishes` combines six terms (`agents/ranking.py`):
+
+| Term | Weight | Purpose |
+|---|---|---|
+| `cuisine_priority` | 1.0 | The configured order from `models.yaml` |
+| `cuisine_affinity` | 0.8 | Learned, per audience |
+| `ingredient_affinity` | 0.6 | Mean over ingredients *carrying signal*, so one disliked ingredient is not diluted by a long list of neutral staples |
+| `dish_affinity` | 0.5 | Learned, per dish name |
+| `recency_penalty` | −0.7 | Linear decay over 7 days |
+| `exploration` | 0.35 | `1/(1+observations)` — a UCB-flavoured bonus for dishes nothing is known about |
+
+The configured order and learned affinity are deliberately allowed to overpower each other depending on evidence. With little feedback the learned terms sit near zero and the configured order decides everything, so a fresh install ranks exactly as it did before any of this existed. As feedback accumulates the learned terms grow and can override it — which is correct: the config is a preference stated once, feedback is what the household actually ate.
+
+The exploration term is not optional garnish. Without it the loop converges onto the same few well-rated dishes and variety collapses, which is the most common way a preference loop quietly fails. `repetition_rate` exists to detect exactly that.
+
+A short learned-preference block is also injected into the shortlist prompt, capped at four items per category and gated on `CONFIDENT_OBSERVATIONS`. Below that threshold it resolves to an empty string, so the cold-start prompt is byte-identical to what it was before — a weak signal in a prompt is noise a small model may latch onto far harder than the score warrants.
+
+Repetition avoidance also finally reads `Dish.last_suggested_at`, which had been written on every suggestion since the beginning and never read.
+
+**Cache interaction.** Learned preference is folded into the prewarm fingerprint. Without that, feedback would be recorded and aggregated correctly and then never reach the user, because a plan cached before the household rated anything would keep being served until the pantry happened to change. This is the subtlest failure in the whole design and `test_fingerprint_changes_when_preferences_change` exists to guard it.
+
+### Evaluate
+
+Two independent measurements, because they answer different questions.
+
+**Offline** (`app/eval/`) asks *is the model capable*. Five fixture households run through the real planner, scored by eleven structural checks that need no human judgement — invented ingredients, uncookable plans, toddler safety violations, missing recipes, repeated dishes. It exists mainly to settle a question the VRAM profiles created and could not otherwise answer: whether the 12 GB profile actually degrades plan quality, and by how much. Profiles are compared by re-executing the runner in a subprocess each, because `get_settings` and the LLM client are both cached and swapping in-process would silently evaluate the wrong model.
+
+Two checks (`ingredients_in_stock`, `toddler_safety`) deliberately re-verify invariants the planner already enforces. A failure there means a dish reached the user without passing `InventoryAllocator` or `validate_toddler_dish` — an application bug, not a weak model.
+
+**Online** (`services/metrics.py`) asks *is the household actually eating this*, which no fixture can fake:
+
+- `cook_through_rate` — cooked ÷ suggested. The north star.
+- `thumbs_up_rate` — up ÷ (up + down). Diagnostic; 0 means unrated, not hated.
+- `reroll_rate` — plans rejected wholesale ÷ plans.
+- `repetition_rate` — `1 − distinct ÷ suggested`. Rising means the loop has collapsed onto a few safe dishes.
+
+Snapshots are persisted because a single reading says little and the trend says everything.
+
+`learn_from_feedback: false` keeps capture and measurement running but stops feedback acting on suggestions. That is the baseline to measure the loop against — otherwise "it feels better" is the only available evidence.
+
+### Trade-offs taken
+
+- **Whole-table rebuild over incremental update.** Slower in principle, irrelevant at household scale, and it makes the aggregate a pure function of the log.
+- **Arithmetic over a learned model.** Runs in milliseconds on a constrained box, is inspectable in the database via `GET /feedback/preferences`, and cannot invent a preference nobody expressed. It will never capture "likes spicy food on cold evenings".
+- **Structured downvote reasons over free text.** Free text is more expressive but cannot be aggregated without another LLM call.
+- **Six-hour maintenance interval.** The sweep is the only thing needing wall-clock time to observe, and none of the inputs move faster. On a single-GPU box this worker competes with the model.
+
 ## Local run
 
 ```bash
@@ -343,8 +441,11 @@ roles:
 
 features:
   web_search: false               # enable after SearXNG is running
+  learn_from_feedback: true       # let feedback re-rank future suggestions
+  feedback_maintenance_interval_s: 21600
+  metrics_window_days: 30
 ```
 
 Changing `model` or `base_url` under any role is the only thing needed to swap models. To swap the whole lineup at once, point `CONFIG_PATH` at a file in `config/profiles/` instead.
 
-Note that `features` is a **top-level** key, not a child of `preferences`. `Settings.features` reads `web_search`, `web_search_provider`, `tavily_search_depth`, `searxng_url`, `web_search_timeout_s`, `web_search_max_results`, `prewarm_suggestions` and `prewarm_interval_s` from there; keys placed under `preferences` are silently ignored and fall back to hardcoded defaults. Only `cuisine_priority` and `max_suggestions` belong under `preferences`.
+Note that `features` is a **top-level** key, not a child of `preferences`. `Settings.features` reads `web_search`, `web_search_provider`, `tavily_search_depth`, `searxng_url`, `web_search_timeout_s`, `web_search_max_results`, `prewarm_suggestions`, `prewarm_interval_s`, `learn_from_feedback`, `feedback_maintenance_interval_s` and `metrics_window_days` from there; keys placed under `preferences` are silently ignored and fall back to hardcoded defaults. Only `cuisine_priority` and `max_suggestions` belong under `preferences`.

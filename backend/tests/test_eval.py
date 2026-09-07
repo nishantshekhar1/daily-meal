@@ -8,13 +8,12 @@ worse than none, because it manufactures confidence.
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
 
 from app.eval import checks as C
 from app.eval.runner import build_scenario_db, format_comparison, format_report
-from app.eval.scenarios import SCENARIOS, EMPTY_PANTRY, STOCKED_OMNIVORE, TODDLER_HOUSEHOLD, by_name
+from app.eval.scenarios import EMPTY_PANTRY, SCENARIOS, STOCKED_OMNIVORE, TODDLER_HOUSEHOLD, by_name
 
 
 def meal(
@@ -73,8 +72,9 @@ def test_scenarios_only_reference_seeded_ingredients():
 def test_scenario_db_is_isolated_per_call():
     a = build_scenario_db(STOCKED_OMNIVORE)
     b = build_scenario_db(EMPTY_PANTRY)
-    from app.models import StockLot
     from sqlmodel import select
+
+    from app.models import StockLot
 
     assert len(a.exec(select(StockLot)).all()) > 0
     assert len(b.exec(select(StockLot)).all()) == 0

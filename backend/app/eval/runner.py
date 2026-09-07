@@ -27,18 +27,17 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from typing import Any, Optional
 
 from sqlalchemy.pool import StaticPool
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session, SQLModel, create_engine, select
 
 import app.models  # noqa: F401  (populates SQLModel.metadata)
 from app.db.seed import seed_into
 from app.eval.checks import CheckResult, run_checks
 from app.eval.scenarios import SCENARIOS, Scenario, by_name
 from app.models import CanonicalIngredient, HouseholdMember, MealSlot, StockLot
-from sqlmodel import select
 
 
 @dataclass

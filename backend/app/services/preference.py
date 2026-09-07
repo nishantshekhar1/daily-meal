@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
-from typing import Iterable, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Optional
 
 from sqlmodel import Session, select
 
@@ -188,6 +189,129 @@ def load_observations(
         )
     ).all()
     return {r.scope_key: r.observations for r in rows}
+
+
+@dataclass
+class RankingContext:
+    """Everything :mod:`app.agents.ranking` needs, keyed the way it wants it.
+
+    Learned dish scores are stored against dish ids but the shortlist only has
+    names, so they are re-keyed by name here rather than in the ranker, which
+    stays free of database concerns.
+    """
+
+    cuisine_scores: dict[str, float] = field(default_factory=dict)
+    ingredient_scores: dict[str, float] = field(default_factory=dict)
+    dish_scores: dict[str, float] = field(default_factory=dict)
+    observations: dict[str, int] = field(default_factory=dict)
+    last_suggested: dict[str, datetime] = field(default_factory=dict)
+
+
+def build_ranking_context(db: Session, audience: str = "main") -> RankingContext:
+    """Load learned preference plus repetition history for one audience."""
+    dish_scores_by_id = load_scores(db, PreferenceScope.dish, audience)
+    dish_obs_by_id = load_observations(db, PreferenceScope.dish, audience)
+
+    dish_scores: dict[str, float] = {}
+    observations: dict[str, int] = {}
+    last_suggested: dict[str, datetime] = {}
+
+    for dish in db.exec(select(Dish)).all():
+        key = (dish.name or "").strip().lower()
+        if not key:
+            continue
+        dish_id = str(dish.id)
+        if dish_id in dish_scores_by_id:
+            dish_scores[key] = dish_scores_by_id[dish_id]
+        if dish_id in dish_obs_by_id:
+            observations[key] = dish_obs_by_id[dish_id]
+        if dish.last_suggested_at is not None:
+            # A dish can exist several times under the same name; the most
+            # recent suggestion is what drives repetition fatigue.
+            prior = last_suggested.get(key)
+            if prior is None or dish.last_suggested_at > prior:
+                last_suggested[key] = dish.last_suggested_at
+
+    return RankingContext(
+        cuisine_scores=load_scores(db, PreferenceScope.cuisine, audience),
+        ingredient_scores=load_scores(db, PreferenceScope.ingredient, audience),
+        dish_scores=dish_scores,
+        observations=observations,
+        last_suggested=last_suggested,
+    )
+
+
+# Only opinions this strong, backed by this much evidence, are worth spending
+# prompt tokens on. A weak signal in the prompt is noise the model may latch
+# onto far harder than the score itself warrants.
+HINT_SCORE_THRESHOLD = 0.15
+HINT_MAX_ITEMS = 4
+
+
+def _hint_items(scores: dict[str, float], observations: dict[str, int], positive: bool):
+    picked = [
+        (key, score)
+        for key, score in scores.items()
+        if (score > HINT_SCORE_THRESHOLD if positive else score < -HINT_SCORE_THRESHOLD)
+        and observations.get(key, 0) >= CONFIDENT_OBSERVATIONS
+    ]
+    picked.sort(key=lambda kv: -abs(kv[1]))
+    return [key for key, _ in picked[:HINT_MAX_ITEMS]]
+
+
+def preference_hint(db: Session, audience: str = "main") -> str:
+    """A short natural-language summary of learned preference for the prompt.
+
+    Returns an empty string when there is not enough evidence, which keeps the
+    cold-start prompt byte-identical to what it was before this feature and
+    avoids nudging a small model with noise.
+    """
+    cuisine_scores = load_scores(db, PreferenceScope.cuisine, audience)
+    cuisine_obs = load_observations(db, PreferenceScope.cuisine, audience)
+    ingredient_scores = load_scores(db, PreferenceScope.ingredient, audience)
+    ingredient_obs = load_observations(db, PreferenceScope.ingredient, audience)
+
+    liked = _hint_items(cuisine_scores, cuisine_obs, True) + _hint_items(
+        ingredient_scores, ingredient_obs, True
+    )
+    disliked = _hint_items(cuisine_scores, cuisine_obs, False) + _hint_items(
+        ingredient_scores, ingredient_obs, False
+    )
+    if not liked and not disliked:
+        return ""
+
+    parts = ["Based on what this household actually cooked and rated before: "]
+    if liked:
+        parts.append("they tend to like " + ", ".join(liked) + ". ")
+    if disliked:
+        parts.append("they tend to avoid " + ", ".join(disliked) + ". ")
+    parts.append(
+        "Treat this as a preference, not a rule — the pantry still decides what "
+        "is possible. "
+    )
+    return "".join(parts)
+
+
+def recently_suggested(db: Session, days: int = 3, limit: int = 12) -> list[str]:
+    """Dish names put in front of the household lately, to avoid repeating them.
+
+    ``Dish.last_suggested_at`` has been written on every suggestion since the
+    beginning and was never read; this is the first thing to use it.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    rows = db.exec(
+        select(Dish)
+        .where(Dish.last_suggested_at != None)  # noqa: E711
+        .where(Dish.last_suggested_at >= cutoff)
+        .order_by(Dish.last_suggested_at.desc())
+        .limit(limit)
+    ).all()
+    seen: list[str] = []
+    for dish in rows:
+        name = (dish.name or "").strip()
+        if name and name.lower() not in {s.lower() for s in seen}:
+            seen.append(name)
+    return seen
 
 
 def profile_version(db: Session) -> str:

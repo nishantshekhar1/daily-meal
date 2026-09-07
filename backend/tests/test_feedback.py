@@ -6,6 +6,8 @@ said directly.
 """
 from __future__ import annotations
 
+from sqlmodel import select
+
 from app.models import (
     DishFeedback,
     FeedbackReason,
@@ -15,8 +17,6 @@ from app.models import (
 )
 from app.services import feedback as fb
 from app.services import preference as pref
-
-from sqlmodel import select
 
 
 def _signals(db, planned_meal_id: int) -> list[str]:

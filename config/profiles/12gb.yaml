@@ -76,6 +76,15 @@ features:
   prewarm_suggestions: false
   prewarm_interval_s: 300
 
+  # ── Learning from feedback ─────────────────────────────────────────────────
+  # Re-ranking is deterministic Python and costs nothing, so it stays on at
+  # every tier. The one cost at this size is the learned-preference block added
+  # to the shortlist prompt: it is capped at four items per category, but if
+  # instruction-following degrades here, this is the first flag to turn off.
+  learn_from_feedback: true
+  feedback_maintenance_interval_s: 21600
+  metrics_window_days: 30
+
 # ── Application ─────────────────────────────────────────────────────────────
 app:
   db_url: "sqlite:///./data/daily_meal.db"

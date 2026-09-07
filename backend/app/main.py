@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import feedback, household, meals, pantry, receipts
 from app.core.config import get_settings
 from app.db.session import create_db_and_tables
-from app.services import prewarm
+from app.services import maintenance, prewarm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,15 +30,20 @@ async def lifespan(app: FastAPI):
     logger.info("Daily Meal Planner API started. DB: %s", settings.db_url)
 
     stop = asyncio.Event()
-    worker: asyncio.Task | None = None
+    workers: list[asyncio.Task] = []
     if settings.prewarm_suggestions:
-        worker = asyncio.create_task(prewarm.prewarm_loop(stop))
+        workers.append(asyncio.create_task(prewarm.prewarm_loop(stop)))
+    # Runs even when learning is disabled: the sweep and the metrics snapshot
+    # are how you measure whether the loop would help, which you need before
+    # deciding to turn it on.
+    workers.append(asyncio.create_task(maintenance.maintenance_loop(stop)))
 
     yield
 
-    if worker is not None:
-        stop.set()
+    stop.set()
+    for worker in workers:
         worker.cancel()
+    for worker in workers:
         with suppress(asyncio.CancelledError):
             await worker
     logger.info("Shutting down.")

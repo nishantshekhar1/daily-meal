@@ -86,6 +86,23 @@ features:
   # How often the background worker re-checks that the cache is warm.
   prewarm_interval_s: 300
 
+  # ── Learning from feedback ─────────────────────────────────────────────────
+  # Use thumbs, cooked meals and skipped suggestions to re-rank future
+  # suggestions and to hint the shortlist prompt.
+  #
+  # Turning this off still records and measures feedback, it just stops it
+  # acting on suggestions — that is the baseline to compare against when you
+  # want to know whether the loop is actually helping.
+  learn_from_feedback: true
+
+  # How often the background worker sweeps skipped suggestions, re-aggregates
+  # preference profiles and snapshots quality metrics. Hours, not minutes: none
+  # of the inputs move faster, and this competes with the model for the GPU.
+  feedback_maintenance_interval_s: 21600
+
+  # Trailing window for cook-through rate and the other quality metrics.
+  metrics_window_days: 30
+
 # ── Application ─────────────────────────────────────────────────────────────
 app:
   db_url: "sqlite:///./data/daily_meal.db"

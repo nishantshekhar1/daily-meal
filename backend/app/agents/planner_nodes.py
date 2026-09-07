@@ -14,6 +14,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from sqlmodel import Session, select
 
+from app.agents import ranking
 from app.agents.graph_state import PlannerState
 from app.agents.inventory import DishRequirement, InventoryAllocator
 from app.agents.safety import validate_toddler_dish
@@ -30,6 +31,7 @@ from app.models import (
     PlanningSession,
     StockLot,
 )
+from app.services import preference
 from app.services.llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -309,6 +311,23 @@ async def shortlist_dishes(state: PlannerState, config: RunnableConfig) -> dict[
     else:
         cuisine_hint = "Tag every dish with its `cuisine` in lowercase. "
 
+    # Learned preference and repetition avoidance. Both resolve to an empty
+    # string until there is real evidence, so a fresh install sends exactly the
+    # prompt it always did rather than being nudged by noise.
+    audience_scope = "toddler" if has_toddler else "main"
+    learned_hint = (
+        preference.preference_hint(_db, audience_scope)
+        if get_settings().learn_from_feedback
+        else ""
+    )
+    recent = preference.recently_suggested(_db)
+    variety_hint = (
+        "These were suggested in the last few days, so prefer something different "
+        "unless the pantry leaves no good alternative: " + ", ".join(recent) + ". "
+        if recent
+        else ""
+    )
+
     prompt = [
         {
             "role": "system",
@@ -325,6 +344,8 @@ async def shortlist_dishes(state: PlannerState, config: RunnableConfig) -> dict[
                     else ""
                 )
                 + cuisine_hint
+                + learned_hint
+                + variety_hint
                 + "Suggest 3–6 main dishes (audience=main) and, if there are toddlers, "
                 "1–3 toddler dishes (audience=toddler). "
                 "For each dish list the ingredients with realistic quantities for the "
@@ -370,23 +391,53 @@ def cuisine_rank(cuisine: str | None, priority: list[str]) -> int:
 
 
 async def rank_dishes(state: PlannerState, config: RunnableConfig) -> dict[str, Any]:
-    """Order the shortlist by household cuisine preference.
+    """Order the shortlist by configured preference and learned feedback.
 
-    Stable sort, so the model's own ordering breaks ties within a cuisine.
-    Main and toddler dishes are ranked independently so a toddler dish is never
-    pushed out of the plan by better-ranked adult dishes.
+    Combines the household's configured cuisine order with what they actually
+    cooked and rated, a penalty for dishes suggested in the last few days, and
+    a bonus for dishes nothing is known about yet. See
+    :class:`app.agents.ranking.RankingWeights` for how those trade off.
+
+    Main and toddler dishes are ranked independently, and against separate
+    learned profiles, so a toddler dish is never pushed out of the plan by
+    better-ranked adult dishes.
     """
+    db, _llm = _cfg(config)
     priority = state.get("cuisine_priority") or []
     dishes = list(state.get("candidate_dishes") or [])
-    if not priority or not dishes:
+    if not dishes:
         return {}
-    _status("rank", f"Ranking by cuisine preference ({', '.join(priority)})")
 
-    def sort_group(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return sorted(group, key=lambda d: cuisine_rank(d.get("cuisine"), priority))
+    settings = get_settings()
+    learning = settings.learn_from_feedback
+    weights = ranking.DEFAULT_WEIGHTS if learning else ranking.NO_LEARNING_WEIGHTS
 
-    mains = sort_group([d for d in dishes if d.get("audience") != "toddler"])
-    toddler = sort_group([d for d in dishes if d.get("audience") == "toddler"])
+    def sort_group(group: list[dict[str, Any]], audience: str) -> list[dict[str, Any]]:
+        if not group:
+            return []
+        ctx = preference.build_ranking_context(db, audience)
+        ranked = ranking.rank(
+            group,
+            cuisine_priority=priority,
+            cuisine_scores=ctx.cuisine_scores,
+            ingredient_scores=ctx.ingredient_scores,
+            dish_scores=ctx.dish_scores,
+            observations=ctx.observations,
+            last_suggested=ctx.last_suggested,
+            weights=weights,
+        )
+        return [scored.dish for scored in ranked]
+
+    learned = learning and preference.has_signal(db)
+    if learned:
+        _status("rank", "Ranking by your preferences and past feedback…")
+    elif priority:
+        _status("rank", f"Ranking by cuisine preference ({', '.join(priority)})")
+    else:
+        _status("rank", "Ranking suggestions…")
+
+    mains = sort_group([d for d in dishes if d.get("audience") != "toddler"], "main")
+    toddler = sort_group([d for d in dishes if d.get("audience") == "toddler"], "toddler")
     return {"candidate_dishes": mains + toddler}
 
 

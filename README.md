@@ -85,6 +85,36 @@ Inventory arithmetic and toddler safety are plain Python, so a smaller model can
 
 ---
 
+## Improving suggestions over time
+
+The app learns from what you actually cook. Cooking a meal, re-rolling a plan, or leaving a suggestion untouched are all recorded automatically; the thumbs on each meal card are there to sharpen those weaker signals, not to carry the loop on their own.
+
+Learned preference re-ranks future suggestions and adds a short hint to the planner's prompt. It is deliberately slow to move — a scope needs several consistent signals before it shifts anything, so one disappointing dinner will not banish a whole cuisine.
+
+Inspect what it has learned, or measure whether it is working:
+
+```bash
+curl localhost:8000/api/v1/feedback/preferences   # learned likes and dislikes
+curl localhost:8000/api/v1/feedback/metrics       # cook-through rate and friends
+```
+
+`cook_through_rate` — how many suggested meals actually got made — is the number to watch. `repetition_rate` is the one to watch out for: if it climbs, suggestions have narrowed onto the same few dishes.
+
+To turn the learning off while still recording and measuring feedback, set `learn_from_feedback: false` under `features` in your config. That is also the baseline to compare against if you want to know whether the loop is helping.
+
+### Checking suggestion quality after a change
+
+`backend/app/eval/` runs fixture households through the real planner and scores the plans on structural checks — invented ingredients, uncookable recipes, toddler safety violations. It needs a running Ollama and takes minutes.
+
+```bash
+cd backend
+python -m app.eval.runner                          # current config
+python -m app.eval.runner --profiles \
+    ../config/models.yaml ../config/profiles/12gb.yaml
+```
+
+The second form is how to answer "does the smaller profile actually produce worse plans". See [`backend/app/eval/README.md`](backend/app/eval/README.md).
+
 ## Architecture
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the live design document.
@@ -99,6 +129,7 @@ daily-meal/
 │   │   ├── agents/       LLM agent & tools
 │   │   ├── core/         config, settings
 │   │   ├── db/           session, migrations, seed
+│   │   ├── eval/         offline suggestion-quality harness
 │   │   ├── models/       SQLModel entities
 │   │   ├── schemas/      Pydantic I/O schemas
 │   │   └── services/     business logic

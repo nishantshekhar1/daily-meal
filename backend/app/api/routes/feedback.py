@@ -5,7 +5,7 @@ import logging
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, col, desc, select
+from sqlmodel import Session, select
 
 from app.db.session import get_session
 from app.models import FeedbackReason, FeedbackSignal, PreferenceProfile, PreferenceScope
@@ -39,7 +39,7 @@ def rate_meal(req: MealFeedbackRequest, db: DB):
             FeedbackReason(req.reason) if req.reason else None,
         )
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
 
     # Rebuild immediately: a household's whole history aggregates in
     # milliseconds, and the user should see the effect on the next suggestion
@@ -79,8 +79,8 @@ def list_preferences(
     if scope:
         try:
             stmt = stmt.where(PreferenceProfile.scope == PreferenceScope(scope))
-        except ValueError:
-            raise HTTPException(400, f"Unknown scope '{scope}'")
+        except ValueError as e:
+            raise HTTPException(400, f"Unknown scope '{scope}'") from e
     if audience:
         stmt = stmt.where(PreferenceProfile.audience == audience)
 

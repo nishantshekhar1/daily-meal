@@ -131,6 +131,29 @@ class Settings(BaseSettings):
         return max(30, int(self.features.get("prewarm_interval_s", 300)))
 
     @property
+    def learn_from_feedback(self) -> bool:
+        """Whether ranking and prompts use learned preference at all.
+
+        Off means feedback is still recorded and still measurable, but never
+        acts on suggestions — the setting to use when measuring the loop's
+        effect against a baseline.
+        """
+        return bool(self.features.get("learn_from_feedback", True))
+
+    @property
+    def feedback_maintenance_interval_s(self) -> int:
+        """How often the background worker sweeps, re-aggregates and measures.
+
+        Hours rather than minutes: the inputs change a few times a day at most,
+        and this competes with the model for a constrained box.
+        """
+        return max(300, int(self.features.get("feedback_maintenance_interval_s", 21600)))
+
+    @property
+    def metrics_window_days(self) -> int:
+        return max(1, int(self.features.get("metrics_window_days", 30)))
+
+    @property
     def app_cfg(self) -> dict[str, Any]:
         return self._models_cfg.get("app", {})
 

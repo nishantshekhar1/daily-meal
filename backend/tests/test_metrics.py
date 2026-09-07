@@ -63,8 +63,9 @@ def test_unrated_is_distinct_from_disliked(db, make_meal):
 def test_repetition_rate_rises_when_variety_collapses(db, make_meal):
     """The metric that catches the feedback loop eating itself."""
     plan, dish, _ = make_meal(name="Same")
-    from app.models import PlannedMeal
     from datetime import date
+
+    from app.models import PlannedMeal
 
     for _ in range(3):
         db.add(
