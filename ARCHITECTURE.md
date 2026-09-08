@@ -475,7 +475,9 @@ roles:
     model: "nomic-embed-text"
 
 features:
-  web_search: false               # enable after SearXNG is running
+  web_search: true                # Tavily needs TAVILY_API_KEY in backend/.env
+  web_search_daily_limit: 20      # hard cap on searches/day; 0 disables search
+  prewarm_failure_cooldown_s: 3600  # back off a slot that produced no plan
   learn_from_feedback: true       # let feedback re-rank future suggestions
   feedback_maintenance_interval_s: 21600
   metrics_window_days: 30
@@ -483,4 +485,4 @@ features:
 
 Changing `model` or `base_url` under any role is the only thing needed to swap models. To swap the whole lineup at once, point `CONFIG_PATH` at a file in `config/profiles/` instead.
 
-Note that `features` is a **top-level** key, not a child of `preferences`. `Settings.features` reads `web_search`, `web_search_provider`, `tavily_search_depth`, `searxng_url`, `web_search_timeout_s`, `web_search_max_results`, `prewarm_suggestions`, `prewarm_interval_s`, `learn_from_feedback`, `feedback_maintenance_interval_s` and `metrics_window_days` from there; keys placed under `preferences` are silently ignored and fall back to hardcoded defaults. Only `cuisine_priority` and `max_suggestions` belong under `preferences`.
+Note that `features` is a **top-level** key, not a child of `preferences`. `Settings.features` reads `web_search`, `web_search_provider`, `tavily_search_depth`, `searxng_url`, `web_search_timeout_s`, `web_search_max_results`, `web_search_daily_limit`, `prewarm_suggestions`, `prewarm_interval_s`, `prewarm_failure_cooldown_s`, `learn_from_feedback`, `feedback_maintenance_interval_s` and `metrics_window_days` from there; keys placed under `preferences` are silently ignored and fall back to hardcoded defaults. Only `cuisine_priority` and `max_suggestions` belong under `preferences`.
